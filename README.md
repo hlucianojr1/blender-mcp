@@ -57,8 +57,38 @@ The system consists of two main components:
 
 ## Installation
 
+### Running with Docker (Recommended)
 
-### Prerequisites
+The easiest way to run BlenderMCP is using Docker, which handles all dependencies automatically.
+
+#### Prerequisites for Docker Setup
+- Docker and Docker Compose installed
+- Blender 3.0 or newer running on your host machine
+
+#### Steps:
+1. Clone or download this repository
+2. Install the Blender addon (see [Installing the Blender Addon](#installing-the-blender-addon) section below)
+3. Start Blender and enable the BlenderMCP addon
+4. Build and run the Docker container:
+
+```bash
+# Build and start the container
+docker-compose up --build
+
+# Or run in detached mode
+docker-compose up --build -d
+```
+
+The Docker container will automatically connect to Blender running on your host machine using `host.docker.internal:9876`.
+
+#### Environment Variables for Docker
+You can customize the connection by setting environment variables in the `docker-compose.yml` file:
+- `BLENDER_HOST`: Host address for Blender socket server (default: "host.docker.internal")
+- `BLENDER_PORT`: Port number for Blender socket server (default: 9876)
+
+### Manual Installation
+
+#### Prerequisites
 
 - Blender 3.0 or newer
 - Python 3.10 or newer
@@ -175,6 +205,18 @@ _Prerequisites_: Make sure you have [Visual Studio Code](https://code.visualstud
 
 
 ## Usage
+
+### Using with Docker
+
+1. Make sure Blender is running with the BlenderMCP addon enabled
+2. Start the Docker container:
+   ```bash
+   docker-compose up --build
+   ```
+3. Configure Claude Desktop or Cursor with the MCP server (see integration sections above)
+4. The Docker container will handle the MCP server connection to Blender
+
+### Manual Usage
 
 ### Starting the Connection
 ![BlenderMCP in the sidebar](assets/addon-instructions.png)
