@@ -219,6 +219,30 @@ class BlenderMCPServer:
             # Material system handlers (always available)
             "apply_material_preset": self.apply_material_preset,
             "auto_enhance_materials": self.auto_enhance_materials,
+            # Post-processing handlers (always available)
+            "apply_subdivision_surface": self.apply_subdivision_surface,
+            "apply_enhancement_preset": self.apply_enhancement_preset,
+            "auto_enhance_geometry": self.auto_enhance_geometry,
+            "analyze_mesh": self.analyze_mesh,
+            "add_edge_bevel": self.add_edge_bevel,
+            "set_shading": self.set_shading,
+            # Lighting & atmosphere handlers (always available)
+            "setup_hdri_lighting": self.setup_hdri_lighting,
+            "apply_lighting_rig": self.apply_lighting_rig,
+            "add_atmospheric_fog": self.add_atmospheric_fog,
+            "setup_camera": self.setup_camera,
+            "configure_render_settings": self.configure_render_settings,
+            # Composition system handlers (always available)
+            "analyze_composition": self.analyze_composition,
+            "apply_composition_rule": self.apply_composition_rule,
+            "auto_frame_with_composition": self.auto_frame_with_composition,
+            "suggest_composition": self.suggest_composition,
+            "calculate_shot_framing": self.calculate_shot_framing,
+            # Color grading system handlers (always available)
+            "apply_color_grade": self.apply_color_grade,
+            "apply_lut_preset": self.apply_lut_preset,
+            "setup_tone_mapping": self.setup_tone_mapping,
+            "add_color_effects": self.add_color_effects,
         }
 
         # Add Polyhaven handlers only if enabled
@@ -748,7 +772,1198 @@ class BlenderMCPServer:
             
         except Exception as e:
             return {"error": str(e)}
+    
+    # ==================== POST-PROCESSING METHODS ====================
+    
+    def apply_subdivision_surface(self, object_name, viewport_levels=2, render_levels=3, adaptive=True):
+        """Apply subdivision surface modifier to an object"""
+        try:
+            obj = bpy.data.objects.get(object_name)
+            if not obj:
+                return {"error": f"Object '{object_name}' not found"}
+            
+            if obj.type != 'MESH':
+                return {"error": f"Object '{object_name}' is not a mesh"}
+            
+            # Check if subdivision modifier already exists
+            subsurf = None
+            for mod in obj.modifiers:
+                if mod.type == 'SUBSURF':
+                    subsurf = mod
+                    break
+            
+            # Create new modifier if it doesn't exist
+            if not subsurf:
+                subsurf = obj.modifiers.new(name="Subdivision", type='SUBSURF')
+            
+            # Set properties
+            subsurf.levels = viewport_levels
+            subsurf.render_levels = render_levels
+            
+            # Set subdivision algorithm
+            if adaptive:
+                subsurf.subdivision_type = 'CATMULL_CLARK'
+            
+            return {"success": True, "modifier": "Subdivision Surface"}
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def apply_enhancement_preset(self, object_name, preset_config, preset_name="custom"):
+        """Apply a complete enhancement preset to an object"""
+        try:
+            obj = bpy.data.objects.get(object_name)
+            if not obj:
+                return {"error": f"Object '{object_name}' not found"}
+            
+            if obj.type != 'MESH':
+                return {"error": f"Object '{object_name}' is not a mesh"}
+            
+            applied_modifiers = []
+            
+            # Apply subdivision surface
+            if preset_config.get('subdivision', {}).get('enabled'):
+                sub = preset_config['subdivision']
+                result = self.apply_subdivision_surface(
+                    object_name,
+                    viewport_levels=sub.get('levels', 2),
+                    render_levels=sub.get('render_levels', 3),
+                    adaptive=sub.get('adaptive', True)
+                )
+                if result.get('success'):
+                    applied_modifiers.append("Subdivision Surface")
+                    
+                    # Set use_creases if specified
+                    if sub.get('use_creases', False):
+                        for mod in obj.modifiers:
+                            if mod.type == 'SUBSURF':
+                                mod.use_creases = True
+            
+            # Apply edge split
+            if preset_config.get('edge_split', {}).get('enabled'):
+                edge_split = obj.modifiers.new(name="EdgeSplit", type='EDGE_SPLIT')
+                edge_split.split_angle = preset_config['edge_split']['angle'] * 0.0174533  # Convert to radians
+                applied_modifiers.append("Edge Split")
+            
+            # Apply bevel
+            if preset_config.get('bevel', {}).get('enabled'):
+                bev = preset_config['bevel']
+                bevel = obj.modifiers.new(name="Bevel", type='BEVEL')
+                bevel.width = bev.get('width', 0.01)
+                bevel.segments = bev.get('segments', 2)
+                if 'only_vertices' in bev:
+                    bevel.affect = 'VERTICES' if bev['only_vertices'] else 'EDGES'
+                applied_modifiers.append("Bevel")
+            
+            # Apply remesh (for organic)
+            if preset_config.get('remesh', {}).get('enabled'):
+                rem = preset_config['remesh']
+                remesh = obj.modifiers.new(name="Remesh", type='REMESH')
+                remesh.mode = rem.get('mode', 'SMOOTH')
+                remesh.octree_depth = rem.get('octree_depth', 6)
+                applied_modifiers.append("Remesh")
+            
+            # Set shading
+            if preset_config.get('shade_smooth'):
+                # Smooth shading
+                bpy.context.view_layer.objects.active = obj
+                bpy.ops.object.select_all(action='DESELECT')
+                obj.select_set(True)
+                bpy.ops.object.shade_smooth()
+                applied_modifiers.append("Smooth Shading")
+                
+                # Auto smooth
+                if preset_config.get('auto_smooth', {}).get('enabled'):
+                    obj.data.use_auto_smooth = True
+                    obj.data.auto_smooth_angle = preset_config['auto_smooth']['angle'] * 0.0174533
+                    applied_modifiers.append("Auto Smooth")
+            else:
+                # Flat shading
+                bpy.context.view_layer.objects.active = obj
+                bpy.ops.object.select_all(action='DESELECT')
+                obj.select_set(True)
+                bpy.ops.object.shade_flat()
+                applied_modifiers.append("Flat Shading")
+            
+            return {
+                "success": True,
+                "applied_modifiers": applied_modifiers
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def auto_enhance_geometry(self, object_name=None, analyze_first=True):
+        """Automatically enhance geometry quality"""
+        try:
+            from .post_processing import get_suggested_preset, ENHANCEMENT_PRESETS
+            
+            enhanced = []
+            objects_to_enhance = []
+            
+            if object_name:
+                obj = bpy.data.objects.get(object_name)
+                if obj:
+                    objects_to_enhance = [obj]
+                else:
+                    return {"error": f"Object '{object_name}' not found"}
+            else:
+                # Enhance all mesh objects
+                objects_to_enhance = [obj for obj in bpy.context.scene.objects if obj.type == 'MESH']
+            
+            for obj in objects_to_enhance:
+                # Analyze mesh if requested
+                if analyze_first:
+                    stats = self._get_mesh_stats(obj)
+                    
+                    # Use analysis to determine preset
+                    face_count = stats.get('face_count', 0)
+                    if face_count < 1000:
+                        suggested = "high_detail"
+                    elif "vehicle" in obj.name.lower() or "car" in obj.name.lower():
+                        suggested = "mechanical"
+                    elif "building" in obj.name.lower() or "wall" in obj.name.lower():
+                        suggested = "architectural"
+                    else:
+                        suggested = get_suggested_preset(obj.name)
+                else:
+                    suggested = get_suggested_preset(obj.name)
+                
+                preset_config = ENHANCEMENT_PRESETS[suggested].copy()
+                
+                # Adjust subdivision levels based on poly count if analyzing
+                if analyze_first and 'subdivision' in preset_config and preset_config['subdivision'].get('enabled'):
+                    stats = self._get_mesh_stats(obj)
+                    face_count = stats.get('face_count', 0)
+                    
+                    if face_count < 500:
+                        preset_config['subdivision']['levels'] = 3
+                        preset_config['subdivision']['render_levels'] = 4
+                    elif face_count > 20000:
+                        preset_config['subdivision']['levels'] = 1
+                        preset_config['subdivision']['render_levels'] = 2
+                
+                # Apply the preset
+                result = self.apply_enhancement_preset(obj.name, preset_config, suggested)
+                
+                if result.get("success"):
+                    mods = ", ".join(result.get("applied_modifiers", []))
+                    enhanced.append(f"{obj.name} -> {suggested} ({mods})")
+            
+            return {
+                "success": True,
+                "enhanced_count": len(enhanced),
+                "details": enhanced
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def _get_mesh_stats(self, obj):
+        """Get mesh statistics for an object"""
+        if obj.type != 'MESH':
+            return {}
+        
+        mesh = obj.data
+        
+        stats = {
+            "vertex_count": len(mesh.vertices),
+            "face_count": len(mesh.polygons),
+            "edge_count": len(mesh.edges),
+            "triangles": sum(1 for poly in mesh.polygons if len(poly.vertices) == 3),
+            "quads": sum(1 for poly in mesh.polygons if len(poly.vertices) == 4),
+            "ngons": sum(1 for poly in mesh.polygons if len(poly.vertices) > 4),
+        }
+        
+        return stats
+    
+    def analyze_mesh(self, object_name):
+        """Analyze mesh quality and provide suggestions"""
+        try:
+            obj = bpy.data.objects.get(object_name)
+            if not obj:
+                return {"error": f"Object '{object_name}' not found"}
+            
+            if obj.type != 'MESH':
+                return {"error": f"Object '{object_name}' is not a mesh"}
+            
+            stats = self._get_mesh_stats(obj)
+            
+            # Analyze quality
+            from .post_processing import analyze_mesh_quality
+            analysis = analyze_mesh_quality(stats)
+            
+            return {
+                "success": True,
+                "stats": stats,
+                "analysis": analysis
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def add_edge_bevel(self, object_name, width=0.01, segments=2):
+        """Add bevel modifier to an object"""
+        try:
+            obj = bpy.data.objects.get(object_name)
+            if not obj:
+                return {"error": f"Object '{object_name}' not found"}
+            
+            if obj.type != 'MESH':
+                return {"error": f"Object '{object_name}' is not a mesh"}
+            
+            # Add bevel modifier
+            bevel = obj.modifiers.new(name="Bevel", type='BEVEL')
+            bevel.width = width
+            bevel.segments = segments
+            
+            return {"success": True}
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def set_shading(self, object_name, smooth=True, auto_smooth_angle=30.0):
+        """Set object shading"""
+        try:
+            obj = bpy.data.objects.get(object_name)
+            if not obj:
+                return {"error": f"Object '{object_name}' not found"}
+            
+            if obj.type != 'MESH':
+                return {"error": f"Object '{object_name}' is not a mesh"}
+            
+            # Set active and select
+            bpy.context.view_layer.objects.active = obj
+            bpy.ops.object.select_all(action='DESELECT')
+            obj.select_set(True)
+            
+            # Apply shading
+            if smooth:
+                bpy.ops.object.shade_smooth()
+                if auto_smooth_angle > 0:
+                    obj.data.use_auto_smooth = True
+                    obj.data.auto_smooth_angle = auto_smooth_angle * 0.0174533  # Convert to radians
+            else:
+                bpy.ops.object.shade_flat()
+            
+            return {"success": True}
+            
+        except Exception as e:
+            return {"error": str(e)}
 
+    # ========================================================================
+    # LIGHTING & ATMOSPHERE COMMANDS
+    # ========================================================================
+
+    def setup_hdri_lighting(self, preset, config):
+        """Set up HDRI environment lighting"""
+        try:
+            # Get or create world
+            if not bpy.context.scene.world:
+                bpy.context.scene.world = bpy.data.worlds.new("World")
+            
+            world = bpy.context.scene.world
+            world.use_nodes = True
+            nodes = world.node_tree.nodes
+            links = world.node_tree.links
+            
+            # Clear existing nodes
+            nodes.clear()
+            
+            # Create nodes
+            output_node = nodes.new('ShaderNodeOutputWorld')
+            background_node = nodes.new('ShaderNodeBackground')
+            env_texture = nodes.new('ShaderNodeTexEnvironment')
+            mapping = nodes.new('ShaderNodeMapping')
+            tex_coord = nodes.new('ShaderNodeTexCoord')
+            
+            # Position nodes
+            tex_coord.location = (-800, 0)
+            mapping.location = (-600, 0)
+            env_texture.location = (-300, 0)
+            background_node.location = (0, 0)
+            output_node.location = (200, 0)
+            
+            # Connect nodes
+            links.new(tex_coord.outputs['Generated'], mapping.inputs['Vector'])
+            links.new(mapping.outputs['Vector'], env_texture.inputs['Vector'])
+            links.new(env_texture.outputs['Color'], background_node.inputs['Color'])
+            links.new(background_node.outputs['Background'], output_node.inputs['Surface'])
+            
+            # Set rotation (convert degrees to radians)
+            import math
+            mapping.inputs['Rotation'].default_value[2] = math.radians(config.get('rotation', 0.0))
+            
+            # Set strength
+            background_node.inputs['Strength'].default_value = config.get('strength', 1.0)
+            
+            # Note: Actual HDRI file loading would require the file path
+            # For now, we set up the node structure and user can load HDRI manually
+            # or via download_polyhaven_asset
+            
+            return {
+                "success": True,
+                "message": f"HDRI node setup complete. Load an HDRI texture or use PolyHaven: {config.get('recommended_hdris', [])}"
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    def apply_lighting_rig(self, preset, config, scale=1.0):
+        """Create a lighting rig with multiple lights"""
+        try:
+            created_lights = []
+            
+            for light_config in config.get('lights', []):
+                # Create light data
+                light_data = bpy.data.lights.new(
+                    name=light_config['name'],
+                    type=light_config['type']
+                )
+                
+                # Set light properties
+                light_data.energy = light_config['energy']
+                light_data.color = light_config['color']
+                
+                # Type-specific properties
+                if light_config['type'] == 'AREA':
+                    light_data.size = light_config.get('size', 1.0)
+                elif light_config['type'] == 'SPOT':
+                    light_data.spot_size = light_config.get('spot_size', 0.785)
+                    light_data.spot_blend = light_config.get('spot_blend', 0.15)
+                elif light_config['type'] == 'SUN':
+                    light_data.angle = light_config.get('angle', 0.00918)
+                
+                # Create light object
+                light_obj = bpy.data.objects.new(light_config['name'], light_data)
+                bpy.context.collection.objects.link(light_obj)
+                
+                # Set location (scaled)
+                loc = light_config['location']
+                light_obj.location = (loc[0] * scale, loc[1] * scale, loc[2] * scale)
+                
+                # Set rotation (convert to radians)
+                import math
+                rot = light_config['rotation']
+                light_obj.rotation_euler = (rot[0], rot[1], rot[2])
+                
+                created_lights.append(light_config['name'])
+            
+            return {
+                "success": True,
+                "lights_created": created_lights,
+                "count": len(created_lights)
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    def add_atmospheric_fog(self, preset, config):
+        """Add volumetric fog to the scene"""
+        try:
+            if not config.get('volumetric'):
+                # Clear volumetrics
+                if bpy.context.scene.world:
+                    world = bpy.context.scene.world
+                    if world.use_nodes:
+                        # Remove volume shader if exists
+                        nodes = world.node_tree.nodes
+                        for node in nodes:
+                            if node.type == 'VOLUME_SCATTER':
+                                nodes.remove(node)
+                return {"success": True, "message": "Volumetrics cleared"}
+            
+            # Get or create world
+            if not bpy.context.scene.world:
+                bpy.context.scene.world = bpy.data.worlds.new("World")
+            
+            world = bpy.context.scene.world
+            world.use_nodes = True
+            nodes = world.node_tree.nodes
+            links = world.node_tree.links
+            
+            # Find or create output node
+            output_node = None
+            for node in nodes:
+                if node.type == 'OUTPUT_WORLD':
+                    output_node = node
+                    break
+            
+            if not output_node:
+                output_node = nodes.new('ShaderNodeOutputWorld')
+                output_node.location = (200, 0)
+            
+            # Create volume scatter node
+            volume_scatter = nodes.new('ShaderNodeVolumeScatter')
+            volume_scatter.location = (0, -200)
+            
+            # Set properties
+            volume_scatter.inputs['Density'].default_value = config.get('density', 0.05)
+            volume_scatter.inputs['Anisotropy'].default_value = config.get('anisotropy', 0.1)
+            volume_scatter.inputs['Color'].default_value = list(config.get('color', (0.8, 0.85, 0.9))) + [1.0]
+            
+            # Create volume absorption if specified
+            if 'absorption_color' in config:
+                volume_abs = nodes.new('ShaderNodeVolumeAbsorption')
+                volume_abs.location = (0, -350)
+                volume_abs.inputs['Color'].default_value = list(config['absorption_color']) + [1.0]
+                
+                # Mix volumes
+                add_shader = nodes.new('ShaderNodeAddShader')
+                add_shader.location = (200, -250)
+                links.new(volume_scatter.outputs['Volume'], add_shader.inputs[0])
+                links.new(volume_abs.outputs['Volume'], add_shader.inputs[1])
+                links.new(add_shader.outputs['Shader'], output_node.inputs['Volume'])
+            else:
+                # Direct connection
+                links.new(volume_scatter.outputs['Volume'], output_node.inputs['Volume'])
+            
+            return {
+                "success": True,
+                "message": f"Volumetric atmosphere added: {preset}"
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    def setup_camera(self, preset, config, position_type="three_quarter", target_object=None):
+        """Create and configure a camera"""
+        try:
+            import math
+            from .lighting import calculate_camera_position
+            
+            # Create camera
+            camera_data = bpy.data.cameras.new("Camera")
+            camera_obj = bpy.data.objects.new("Camera", camera_data)
+            bpy.context.collection.objects.link(camera_obj)
+            
+            # Set camera properties
+            camera_data.lens = config.get('focal_length', 50)
+            camera_data.sensor_width = config.get('sensor_width', 36)
+            
+            # Depth of field
+            if config.get('dof_enabled'):
+                camera_data.dof.use_dof = True
+                camera_data.dof.aperture_fstop = config.get('f_stop', 5.6)
+                
+                # If target object specified, focus on it
+                if target_object:
+                    target_obj = bpy.data.objects.get(target_object)
+                    if target_obj:
+                        camera_data.dof.focus_object = target_obj
+            
+            # Calculate camera position
+            if target_object:
+                target_obj = bpy.data.objects.get(target_object)
+                if target_obj:
+                    # Get bounding box
+                    bbox_corners = [target_obj.matrix_world @ mathutils.Vector(corner) for corner in target_obj.bound_box]
+                    min_corner = [min(c[i] for c in bbox_corners) for i in range(3)]
+                    max_corner = [max(c[i] for c in bbox_corners) for i in range(3)]
+                    
+                    cam_pos = calculate_camera_position([min_corner, max_corner], position_type)
+                    camera_obj.location = cam_pos['location']
+                    camera_obj.rotation_euler = [math.radians(r) for r in cam_pos['rotation']]
+                    
+                    # Point camera at target
+                    direction = mathutils.Vector(cam_pos['target']) - mathutils.Vector(cam_pos['location'])
+                    rot_quat = direction.to_track_quat('-Z', 'Y')
+                    camera_obj.rotation_euler = rot_quat.to_euler()
+            else:
+                # Default position
+                default_pos = calculate_camera_position(None, position_type)
+                camera_obj.location = default_pos['location']
+                camera_obj.rotation_euler = [math.radians(r) for r in default_pos['rotation']]
+            
+            # Make this the active camera
+            bpy.context.scene.camera = camera_obj
+            
+            return {
+                "success": True,
+                "camera_name": camera_obj.name,
+                "focal_length": camera_data.lens,
+                "dof_enabled": config.get('dof_enabled', False)
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    def configure_render_settings(self, preset, config):
+        """Configure render engine and quality settings"""
+        try:
+            scene = bpy.context.scene
+            
+            # Set render engine
+            engine = config.get('engine', 'CYCLES')
+            scene.render.engine = engine
+            
+            # Set resolution
+            scene.render.resolution_x = config.get('resolution_x', 1920)
+            scene.render.resolution_y = config.get('resolution_y', 1080)
+            scene.render.resolution_percentage = config.get('resolution_percentage', 100)
+            
+            # Engine-specific settings
+            if engine == 'CYCLES':
+                scene.cycles.samples = config.get('samples', 128)
+                scene.cycles.use_denoising = config.get('use_denoising', True)
+                
+                # Enable volumetrics for better fog/atmosphere
+                scene.cycles.volume_bounces = 2
+                scene.cycles.transparent_max_bounces = 8
+                
+            elif engine == 'BLENDER_EEVEE':
+                scene.eevee.taa_render_samples = config.get('samples', 64)
+                scene.eevee.use_gtao = True
+                scene.eevee.use_bloom = True
+                scene.eevee.use_ssr = True
+                
+                # Enable volumetrics
+                scene.eevee.use_volumetric_lights = True
+                scene.eevee.use_volumetric_shadows = True
+            
+            return {
+                "success": True,
+                "engine": engine,
+                "samples": config.get('samples'),
+                "resolution": f"{scene.render.resolution_x}x{scene.render.resolution_y}"
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    # ============================================================================
+    # COMPOSITION SYSTEM HANDLERS
+    # ============================================================================
+
+    def analyze_composition(self, object_name=None, composition_rule="rule_of_thirds"):
+        """Analyze current scene composition"""
+        try:
+            import mathutils
+            from .composition import calculate_composition_score, COMPOSITION_RULES
+            
+            # Get the object
+            if object_name:
+                obj = bpy.data.objects.get(object_name)
+                if not obj:
+                    return {"error": f"Object '{object_name}' not found"}
+            else:
+                obj = bpy.context.active_object
+                if not obj:
+                    return {"error": "No active object"}
+            
+            # Get active camera
+            camera = bpy.context.scene.camera
+            if not camera:
+                return {"error": "No active camera in scene"}
+            
+            # Calculate object position in screen space
+            scene = bpy.context.scene
+            render = scene.render
+            
+            # Project object center to screen space
+            co_2d = bpy_extras.object_utils.world_to_camera_view(scene, camera, obj.location)
+            
+            # Normalize to 0-1 range
+            screen_x = co_2d.x
+            screen_y = 1.0 - co_2d.y  # Flip Y axis
+            
+            # Calculate composition score
+            score_result = calculate_composition_score((screen_x, screen_y), composition_rule)
+            
+            return {
+                "object": obj.name,
+                "camera": camera.name,
+                "screen_position": {"x": round(screen_x, 3), "y": round(screen_y, 3)},
+                "composition_analysis": score_result
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    def apply_composition_rule(self, object_name, composition_rule="rule_of_thirds", camera_angle="three_quarter"):
+        """Position camera using composition rule"""
+        try:
+            import mathutils
+            import math
+            from .composition import COMPOSITION_RULES, calc_composition_camera as calculate_camera_position
+            
+            # Get the object
+            obj = bpy.data.objects.get(object_name)
+            if not obj:
+                return {"error": f"Object '{object_name}' not found"}
+            
+            # Calculate object bounds
+            bbox = [obj.matrix_world @ mathutils.Vector(corner) for corner in obj.bound_box]
+            min_x = min(v.x for v in bbox)
+            max_x = max(v.x for v in bbox)
+            min_y = min(v.y for v in bbox)
+            max_y = max(v.y for v in bbox)
+            min_z = min(v.z for v in bbox)
+            max_z = max(v.z for v in bbox)
+            
+            object_bounds = {
+                'width': max_x - min_x,
+                'height': max_z - min_z,
+                'depth': max_y - min_y
+            }
+            
+            # Define camera angles
+            angle_presets = {
+                "front": (15, 0),
+                "three_quarter": (15, 45),
+                "side": (15, 90),
+                "top": (75, 45),
+                "low": (5, 45),
+                "high": (35, 45),
+            }
+            
+            camera_angle_degrees = angle_presets.get(camera_angle, (15, 45))
+            
+            # Calculate camera position
+            camera_data = calculate_camera_position(
+                object_center=tuple(obj.location),
+                object_bounds=object_bounds,
+                shot_type="medium_shot",  # Default
+                composition_rule=composition_rule,
+                camera_angle=camera_angle_degrees
+            )
+            
+            # Create or get camera
+            camera_name = f"Composition_Camera"
+            if camera_name in bpy.data.cameras:
+                camera_data_block = bpy.data.cameras[camera_name]
+            else:
+                camera_data_block = bpy.data.cameras.new(camera_name)
+            
+            if camera_name in bpy.data.objects:
+                camera_obj = bpy.data.objects[camera_name]
+            else:
+                camera_obj = bpy.data.objects.new(camera_name, camera_data_block)
+                bpy.context.scene.collection.objects.link(camera_obj)
+            
+            # Set camera position and rotation
+            camera_obj.location = camera_data['position']
+            
+            # Point camera at object
+            direction = mathutils.Vector(camera_data['target']) - mathutils.Vector(camera_data['position'])
+            rot_quat = direction.to_track_quat('-Z', 'Y')
+            camera_obj.rotation_euler = rot_quat.to_euler()
+            
+            # Set camera as active
+            bpy.context.scene.camera = camera_obj
+            
+            return {
+                "success": True,
+                "camera": camera_name,
+                "position": camera_data['position'],
+                "composition_rule": camera_data['composition_rule'],
+                "focal_length": camera_data['focal_length']
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    def auto_frame_with_composition(self, object_name, purpose="general", preset=None):
+        """Automatically frame object with optimal composition"""
+        try:
+            import mathutils
+            import math
+            from .composition import (
+                suggest_shot_type, 
+                suggest_composition_rule, 
+                COMPOSITION_PRESETS,
+                SHOT_TYPES,
+                calc_composition_camera as calculate_camera_position
+            )
+            
+            # Get the object
+            obj = bpy.data.objects.get(object_name)
+            if not obj:
+                return {"error": f"Object '{object_name}' not found"}
+            
+            # Calculate object bounds
+            bbox = [obj.matrix_world @ mathutils.Vector(corner) for corner in obj.bound_box]
+            min_x = min(v.x for v in bbox)
+            max_x = max(v.x for v in bbox)
+            min_y = min(v.y for v in bbox)
+            max_y = max(v.y for v in bbox)
+            min_z = min(v.z for v in bbox)
+            max_z = max(v.z for v in bbox)
+            
+            object_bounds = {
+                'width': max_x - min_x,
+                'height': max_z - min_z,
+                'depth': max_y - min_y
+            }
+            
+            # Use preset if provided
+            if preset and preset in COMPOSITION_PRESETS:
+                preset_config = COMPOSITION_PRESETS[preset]
+                composition_rule = preset_config['composition_rule']
+                shot_type = preset_config['shot_type']
+                camera_angle = preset_config['camera_angle']
+            else:
+                # Auto-suggest
+                shot_type = suggest_shot_type(object_bounds, purpose)
+                
+                # Determine object type from name or purpose
+                object_type = purpose if purpose in ['portrait', 'product', 'architecture'] else 'general'
+                composition_rule = suggest_composition_rule(object_type, 'neutral')
+                camera_angle = (15, 45)  # Default three-quarter view
+            
+            # Calculate camera position
+            camera_data = calculate_camera_position(
+                object_center=tuple(obj.location),
+                object_bounds=object_bounds,
+                shot_type=shot_type,
+                composition_rule=composition_rule,
+                camera_angle=camera_angle
+            )
+            
+            # Create or update camera
+            camera_name = f"AutoFrame_Camera"
+            if camera_name in bpy.data.cameras:
+                camera_data_block = bpy.data.cameras[camera_name]
+            else:
+                camera_data_block = bpy.data.cameras.new(camera_name)
+            
+            if camera_name in bpy.data.objects:
+                camera_obj = bpy.data.objects[camera_name]
+            else:
+                camera_obj = bpy.data.objects.new(camera_name, camera_data_block)
+                bpy.context.scene.collection.objects.link(camera_obj)
+            
+            # Set camera properties
+            camera_obj.location = camera_data['position']
+            camera_data_block.lens = camera_data['focal_length']
+            
+            # Enable DOF
+            camera_data_block.dof.use_dof = True
+            camera_data_block.dof.aperture_fstop = camera_data['fstop']
+            
+            # Point camera at object
+            direction = mathutils.Vector(camera_data['target']) - mathutils.Vector(camera_data['position'])
+            rot_quat = direction.to_track_quat('-Z', 'Y')
+            camera_obj.rotation_euler = rot_quat.to_euler()
+            
+            # Set focus distance
+            focus_distance = (mathutils.Vector(camera_data['position']) - mathutils.Vector(camera_data['target'])).length
+            camera_data_block.dof.focus_distance = focus_distance
+            
+            # Set as active camera
+            bpy.context.scene.camera = camera_obj
+            
+            return {
+                "success": True,
+                "camera": camera_name,
+                "shot_type": camera_data['shot_type'],
+                "composition_rule": camera_data['composition_rule'],
+                "focal_length": camera_data['focal_length'],
+                "fstop": camera_data['fstop'],
+                "position": camera_data['position'],
+                "distance": camera_data['distance'],
+                "frame_fill": f"{int(camera_data['frame_fill'] * 100)}%"
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    def suggest_composition(self, object_name, scene_description=""):
+        """Get composition suggestions for object"""
+        try:
+            import mathutils
+            from .composition import (
+                suggest_shot_type,
+                suggest_composition_rule,
+                COMPOSITION_PRESETS
+            )
+            
+            # Get the object
+            obj = bpy.data.objects.get(object_name)
+            if not obj:
+                return {"error": f"Object '{object_name}' not found"}
+            
+            # Calculate object bounds
+            bbox = [obj.matrix_world @ mathutils.Vector(corner) for corner in obj.bound_box]
+            object_bounds = {
+                'width': max(v.x for v in bbox) - min(v.x for v in bbox),
+                'height': max(v.z for v in bbox) - min(v.z for v in bbox),
+                'depth': max(v.y for v in bbox) - min(v.y for v in bbox)
+            }
+            
+            # Parse scene description for keywords
+            desc_lower = scene_description.lower()
+            
+            # Determine purpose from description
+            if any(word in desc_lower for word in ['detail', 'macro', 'close']):
+                purpose = 'detail'
+            elif any(word in desc_lower for word in ['portrait', 'face']):
+                purpose = 'portrait'
+            elif any(word in desc_lower for word in ['product', 'showcase']):
+                purpose = 'product'
+            elif any(word in desc_lower for word in ['wide', 'landscape', 'epic', 'grand']):
+                purpose = 'landscape'
+            else:
+                purpose = 'general'
+            
+            # Determine context from description
+            if any(word in desc_lower for word in ['symmetrical', 'symmetric', 'minimal']):
+                context = 'symmetrical'
+            elif any(word in desc_lower for word in ['dynamic', 'action', 'dramatic']):
+                context = 'dynamic'
+            else:
+                context = 'neutral'
+            
+            # Get suggestions
+            suggested_shot = suggest_shot_type(object_bounds, purpose)
+            suggested_rule = suggest_composition_rule(purpose, context)
+            
+            # Find matching presets
+            matching_presets = []
+            for preset_name, preset_config in COMPOSITION_PRESETS.items():
+                if (preset_config['composition_rule'] == suggested_rule or 
+                    preset_config['shot_type'] == suggested_shot):
+                    matching_presets.append({
+                        "name": preset_name,
+                        "description": preset_config['name'],
+                        "rule": preset_config['composition_rule'],
+                        "shot": preset_config['shot_type']
+                    })
+            
+            return {
+                "object": object_name,
+                "suggested_shot_type": suggested_shot,
+                "suggested_composition_rule": suggested_rule,
+                "matching_presets": matching_presets[:3],  # Top 3
+                "recommendation": f"Use '{suggested_shot}' shot with '{suggested_rule}' composition"
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    def calculate_shot_framing(self, object_name, shot_type="medium_shot"):
+        """Calculate optimal camera position for shot type"""
+        try:
+            import mathutils
+            from .composition import SHOT_TYPES, calc_composition_camera as calculate_camera_position
+            
+            # Get the object
+            obj = bpy.data.objects.get(object_name)
+            if not obj:
+                return {"error": f"Object '{object_name}' not found"}
+            
+            # Validate shot type
+            if shot_type not in SHOT_TYPES:
+                return {"error": f"Unknown shot type '{shot_type}'. Valid types: {', '.join(SHOT_TYPES.keys())}"}
+            
+            # Calculate object bounds
+            bbox = [obj.matrix_world @ mathutils.Vector(corner) for corner in obj.bound_box]
+            object_bounds = {
+                'width': max(v.x for v in bbox) - min(v.x for v in bbox),
+                'height': max(v.z for v in bbox) - min(v.z for v in bbox),
+                'depth': max(v.y for v in bbox) - min(v.y for v in bbox)
+            }
+            
+            # Calculate camera position
+            camera_data = calculate_camera_position(
+                object_center=tuple(obj.location),
+                object_bounds=object_bounds,
+                shot_type=shot_type,
+                composition_rule="rule_of_thirds",
+                camera_angle=(15, 45)
+            )
+            
+            shot_info = SHOT_TYPES[shot_type]
+            
+            return {
+                "shot_type": shot_info['name'],
+                "description": shot_info['description'],
+                "camera_position": camera_data['position'],
+                "focal_length": camera_data['focal_length'],
+                "fstop": camera_data['fstop'],
+                "distance": camera_data['distance'],
+                "frame_fill": f"{int(camera_data['frame_fill'] * 100)}%",
+                "ideal_for": shot_info['ideal_for']
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    # ==================== COLOR GRADING HANDLERS ====================
+
+    def apply_color_grade(self, preset="cinematic_standard", use_compositor=True):
+        """Apply complete color grade preset (LUT + tone mapping + effects)"""
+        try:
+            from .color_grading import COLOR_GRADE_PRESETS, LUT_PRESETS, TONE_MAPPING
+            
+            if preset not in COLOR_GRADE_PRESETS:
+                return {"error": f"Unknown preset '{preset}'"}
+            
+            grade = COLOR_GRADE_PRESETS[preset]
+            
+            # Apply LUT
+            lut_result = self.apply_lut_preset(grade["lut"])
+            if "error" in lut_result:
+                return lut_result
+            
+            # Apply tone mapping
+            tone_mapping_result = self.setup_tone_mapping(grade["tone_mapping"])
+            if "error" in tone_mapping_result:
+                return tone_mapping_result
+            
+            # Apply effects if compositor is enabled
+            if use_compositor and grade["effects"]:
+                effects_result = self.add_color_effects(grade["effects"])
+                if "error" in effects_result:
+                    return effects_result
+            
+            return {
+                "message": f"Applied color grade '{grade['name']}'",
+                "preset": preset,
+                "lut": grade["lut"],
+                "tone_mapping": grade["tone_mapping"],
+                "effects": grade["effects"] if use_compositor else []
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    def apply_lut_preset(self, lut_preset="cinematic_neutral"):
+        """Apply LUT (Look-Up Table) color grading preset"""
+        try:
+            from .color_grading import LUT_PRESETS, get_color_temperature_offset
+            
+            if lut_preset not in LUT_PRESETS:
+                return {"error": f"Unknown LUT preset '{lut_preset}'"}
+            
+            lut = LUT_PRESETS[lut_preset]
+            
+            # Enable compositor for color grading
+            scene = bpy.context.scene
+            scene.use_nodes = True
+            tree = scene.node_tree
+            
+            # Clear existing nodes (except render layers and composite)
+            for node in tree.nodes:
+                if node.type not in ['R_LAYERS', 'COMPOSITE']:
+                    tree.nodes.remove(node)
+            
+            # Get or create render layers and composite nodes
+            render_layers = None
+            composite = None
+            for node in tree.nodes:
+                if node.type == 'R_LAYERS':
+                    render_layers = node
+                elif node.type == 'COMPOSITE':
+                    composite = node
+            
+            if not render_layers:
+                render_layers = tree.nodes.new('CompositorNodeRLayers')
+                render_layers.location = (0, 0)
+            
+            if not composite:
+                composite = tree.nodes.new('CompositorNodeComposite')
+                composite.location = (800, 0)
+            
+            # Create color balance node for LUT
+            color_balance = tree.nodes.new('CompositorNodeColorBalance')
+            color_balance.name = f"LUT_{lut_preset}"
+            color_balance.location = (200, 0)
+            color_balance.lift = lut["lift"]
+            color_balance.gamma = lut["gamma"]
+            color_balance.gain = lut["gain"]
+            
+            # Create hue/saturation node
+            hue_sat = tree.nodes.new('CompositorNodeHueSat')
+            hue_sat.name = f"Saturation_{lut_preset}"
+            hue_sat.location = (400, 0)
+            hue_sat.inputs['Saturation'].default_value = lut["saturation"]
+            
+            # Create bright/contrast node
+            bright_contrast = tree.nodes.new('CompositorNodeBrightContrast')
+            bright_contrast.name = f"Contrast_{lut_preset}"
+            bright_contrast.location = (600, 0)
+            bright_contrast.inputs['Bright'].default_value = lut["brightness"]
+            bright_contrast.inputs['Contrast'].default_value = lut["contrast"] - 1.0
+            
+            # Link nodes
+            tree.links.new(render_layers.outputs['Image'], color_balance.inputs['Image'])
+            tree.links.new(color_balance.outputs['Image'], hue_sat.inputs['Image'])
+            tree.links.new(hue_sat.outputs['Image'], bright_contrast.inputs['Image'])
+            tree.links.new(bright_contrast.outputs['Image'], composite.inputs['Image'])
+            
+            return {"message": f"Applied LUT '{lut['name']}'"}
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    def setup_tone_mapping(self, tone_mapping="filmic", exposure=0.0, gamma=1.0):
+        """Configure tone mapping (view transform) in color management"""
+        try:
+            from .color_grading import TONE_MAPPING
+            
+            if tone_mapping not in TONE_MAPPING:
+                return {"error": f"Unknown tone mapping '{tone_mapping}'"}
+            
+            tm = TONE_MAPPING[tone_mapping]
+            scene = bpy.context.scene
+            
+            # Set view transform
+            scene.view_settings.view_transform = tm["view_transform"]
+            
+            # Set look if available
+            if tm["look"] != "None":
+                try:
+                    scene.view_settings.look = tm["look"]
+                except:
+                    pass  # Look might not be available for all view transforms
+            
+            # Set exposure and gamma
+            scene.view_settings.exposure = exposure
+            scene.view_settings.gamma = gamma
+            
+            return {"message": f"Configured tone mapping '{tm['name']}'"}
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    def add_color_effects(self, effects=None):
+        """Add color effects like vignette, bloom, grain, etc."""
+        try:
+            from .color_grading import COLOR_EFFECTS
+            
+            if effects is None:
+                effects = ["vignette_subtle", "film_grain_light"]
+            
+            scene = bpy.context.scene
+            scene.use_nodes = True
+            tree = scene.node_tree
+            
+            # Find the last node before composite
+            composite = None
+            last_node = None
+            for node in tree.nodes:
+                if node.type == 'COMPOSITE':
+                    composite = node
+                elif node.location.x > (last_node.location.x if last_node else -1000):
+                    if node.type != 'COMPOSITE':
+                        last_node = node
+            
+            if not composite:
+                return {"error": "Compositor not set up"}
+            
+            if not last_node:
+                # Find render layers as fallback
+                for node in tree.nodes:
+                    if node.type == 'R_LAYERS':
+                        last_node = node
+                        break
+            
+            current_node = last_node
+            current_x = last_node.location.x + 200 if last_node else 200
+            
+            # Add each effect
+            for effect_key in effects:
+                if effect_key not in COLOR_EFFECTS:
+                    continue
+                
+                effect = COLOR_EFFECTS[effect_key]
+                
+                # Vignette
+                if "vignette" in effect_key:
+                    # Create ellipse mask for vignette
+                    ellipse = tree.nodes.new('CompositorNodeEllipseMask')
+                    ellipse.name = f"Vignette_{effect_key}"
+                    ellipse.location = (current_x, -200)
+                    ellipse.width = 0.8
+                    ellipse.height = 0.8
+                    
+                    # Blur the mask
+                    blur = tree.nodes.new('CompositorNodeBlur')
+                    blur.location = (current_x + 150, -200)
+                    blur.size_x = int(effect["vignette_falloff"] * 50)
+                    blur.size_y = int(effect["vignette_falloff"] * 50)
+                    
+                    # Mix with image
+                    mix = tree.nodes.new('CompositorNodeMixRGB')
+                    mix.location = (current_x + 300, 0)
+                    mix.blend_type = 'MULTIPLY'
+                    mix.inputs['Fac'].default_value = effect["vignette_strength"]
+                    
+                    # Link
+                    tree.links.new(ellipse.outputs['Mask'], blur.inputs['Image'])
+                    tree.links.new(current_node.outputs['Image'], mix.inputs[1])
+                    tree.links.new(blur.outputs['Image'], mix.inputs[2])
+                    
+                    current_node = mix
+                    current_x += 350
+                
+                # Film Grain
+                elif "grain" in effect_key:
+                    # Create noise texture (requires texture nodes)
+                    # Simplified: use RGB curves to simulate grain
+                    rgb_curves = tree.nodes.new('CompositorNodeCurveRGB')
+                    rgb_curves.name = f"Grain_{effect_key}"
+                    rgb_curves.location = (current_x, 0)
+                    
+                    # Add slight variation to all channels
+                    for curve in [rgb_curves.mapping.curves[i] for i in range(3)]:
+                        curve.points.new(0.5, 0.5 + effect["grain_strength"])
+                    
+                    tree.links.new(current_node.outputs['Image'], rgb_curves.inputs['Image'])
+                    current_node = rgb_curves
+                    current_x += 200
+                
+                # Bloom/Glare
+                elif "bloom" in effect_key:
+                    glare = tree.nodes.new('CompositorNodeGlare')
+                    glare.name = f"Bloom_{effect_key}"
+                    glare.location = (current_x, 0)
+                    glare.glare_type = 'FOG_GLOW'
+                    glare.quality = 'HIGH'
+                    glare.threshold = effect.get("bloom_threshold", 1.0)
+                    glare.size = int(effect.get("bloom_radius", 6.5))
+                    glare.mix = effect.get("bloom_intensity", 0.1) * -1
+                    
+                    tree.links.new(current_node.outputs['Image'], glare.inputs['Image'])
+                    current_node = glare
+                    current_x += 200
+                
+                # Chromatic Aberration
+                elif "chromatic_aberration" in effect_key:
+                    # Use lens distortion node
+                    lens_distort = tree.nodes.new('CompositorNodeLensdist')
+                    lens_distort.name = f"CA_{effect_key}"
+                    lens_distort.location = (current_x, 0)
+                    lens_distort.inputs['Dispersion'].default_value = effect.get("ca_strength", 0.003)
+                    
+                    tree.links.new(current_node.outputs['Image'], lens_distort.inputs['Image'])
+                    current_node = lens_distort
+                    current_x += 200
+                
+                # Lens Distortion
+                elif "lens_distortion" in effect_key:
+                    lens_distort = tree.nodes.new('CompositorNodeLensdist')
+                    lens_distort.name = f"Distortion_{effect_key}"
+                    lens_distort.location = (current_x, 0)
+                    lens_distort.inputs['Distort'].default_value = effect.get("distortion", 0.02)
+                    lens_distort.inputs['Dispersion'].default_value = effect.get("dispersion", 0.01)
+                    
+                    tree.links.new(current_node.outputs['Image'], lens_distort.inputs['Image'])
+                    current_node = lens_distort
+                    current_x += 200
+            
+            # Link final node to composite
+            composite.location = (current_x, 0)
+            tree.links.new(current_node.outputs['Image'], composite.inputs['Image'])
+            
+            return {
+                "message": f"Applied {len(effects)} color effects",
+                "effects": effects
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
 
     def get_polyhaven_categories(self, asset_type):
         """Get categories for a specific asset type from Polyhaven"""

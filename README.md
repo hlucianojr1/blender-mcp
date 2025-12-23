@@ -42,11 +42,65 @@ Give feedback, get inspired, and build on top of the MCP: [Discord](https://disc
 
 ## Features
 
+### Core Functionality
 - **Two-way communication**: Connect Claude AI to Blender through a socket-based server
 - **Object manipulation**: Create, modify, and delete 3D objects in Blender
-- **Material control**: Apply and modify materials and colors
 - **Scene inspection**: Get detailed information about the current Blender scene
 - **Code execution**: Run arbitrary Python code in Blender from Claude
+
+### Enhancement Systems 🆕
+
+BlenderMCP includes three powerful enhancement systems to transform basic 3D models into production-quality renders:
+
+#### 1. **Material System** 
+Transform flat materials into realistic PBR shaders
+- 20+ material presets (metals, glass, paint, wood, plastics, stone)
+- Procedural texture generation (scratches, dirt, wood grain, etc.)
+- Smart auto-enhancement based on object names
+- See [MATERIAL_SYSTEM.md](MATERIAL_SYSTEM.md) for details
+
+#### 2. **Post-Processing Pipeline**
+Enhance geometry quality of low-poly AI-generated models
+- 5 enhancement presets (smooth, high_detail, mechanical, organic, architectural)
+- Automatic subdivision surface (16-256x geometry increase)
+- Edge beveling for realistic edges
+- Mesh analysis and recommendations
+- See [POST_PROCESSING.md](POST_PROCESSING.md) for details
+
+#### 3. **Lighting & Atmosphere System**
+Professional cinematic lighting and rendering
+- HDRI environment lighting (6 presets)
+- Multi-light rigs (5 configurations)
+- Volumetric atmosphere (fog, god rays, haze)
+- Camera setup with DOF
+- Render quality presets
+- Auto-setup based on scene description
+- See [LIGHTING_SYSTEM.md](LIGHTING_SYSTEM.md) for details
+
+**Quick Enhancement Example:**
+```python
+# Import AI-generated model
+import_generated_asset(name="booth", task_uuid="...")
+
+# Transform with one command each
+auto_enhance_geometry("booth")           # Smooth geometry
+auto_enhance_materials("booth", True)    # Add realistic materials  
+auto_setup_scene_lighting("dramatic outdoor", "booth")  # Professional lighting
+
+# Result: Production-quality render in seconds
+```
+
+See [QUICK_REFERENCE.md](QUICK_REFERENCE.md) for complete enhancement workflows.
+
+### AI Model Generation
+- **Hyper3D Rodin**: Generate 3D models from text or images
+- **Hunyuan3D**: Alternative 3D model generation
+- **Smart enhancement**: Automatically improve AI-generated models
+
+### Asset Libraries
+- **PolyHaven**: Search and download HDRIs, textures, and models
+- **Sketchfab**: Search and download 3D models
+- **Material control**: Apply and modify materials and colors
 
 ## Components
 
