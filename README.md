@@ -63,7 +63,7 @@ The easiest way to run BlenderMCP is using Docker, which handles all dependencie
 
 #### Prerequisites for Docker Setup
 - Docker and Docker Compose installed
-- Blender 3.0 or newer running on your host machine
+- Blender 3.0 or newer running on your host machine (tested up to Blender 5.0)
 
 #### Steps:
 1. Clone or download this repository
@@ -90,7 +90,7 @@ You can customize the connection by setting environment variables in the `docker
 
 #### Prerequisites
 
-- Blender 3.0 or newer
+- Blender 3.0 or newer (tested up to Blender 5.0)
 - Python 3.10 or newer
 - uv package manager: 
 
@@ -278,11 +278,74 @@ The system uses a simple JSON-based protocol over TCP sockets:
 - **Commands** are sent as JSON objects with a `type` and optional `params`
 - **Responses** are JSON objects with a `status` and `result` or `message`
 
-## Limitations & Security Considerations
+## Security & Privacy
 
-- The `execute_blender_code` tool allows running arbitrary Python code in Blender, which can be powerful but potentially dangerous. Use with caution in production environments. ALWAYS save your work before using it.
-- Poly Haven requires downloading models, textures, and HDRI images. If you do not want to use it, please turn it off in the checkbox in Blender. 
+### Code Execution Security
+
+⚠️ **CRITICAL SECURITY WARNING**: The `execute_blender_code` tool executes arbitrary Python code in Blender with full API access. This is powerful but potentially dangerous:
+
+- **Only use with trusted prompts and commands**
+- Code can access your file system, modify Blender data, and execute system commands
+- **ALWAYS save your work before using this feature**
+- Consider disabling this feature in multi-user or untrusted environments
+- Review generated code before execution when possible
+
+### API Key Security
+
+🔐 **Protecting Your API Keys**:
+
+1. **Never commit API keys to version control**
+2. API keys entered in the Blender addon UI are stored in Blender's scene properties and **may be saved in .blend files**
+3. Be careful sharing .blend files that contain API keys
+4. Rotate keys regularly
+5. Use different keys for development and production
+6. The free trial key for Hyper3D has been removed from the codebase for security - get your own key from [hyper3d.ai](https://hyper3d.ai) or [fal.ai](https://fal.ai)
+
+### Telemetry & Privacy
+
+📊 **Anonymous Telemetry**: This project collects anonymous usage data to help improve the tool:
+
+- **What is collected**: Tool execution events, error messages, platform info, anonymous customer UUID
+- **What is NOT collected**: Prompt text (unless explicitly enabled), personal information, file paths
+- **Completely anonymous**: No way to identify individual users
+
+**To disable telemetry**, set any of these environment variables:
+```bash
+# Any of these will disable telemetry
+export DISABLE_TELEMETRY=true
+export BLENDER_MCP_DISABLE_TELEMETRY=true
+export MCP_DISABLE_TELEMETRY=true
+```
+
+Or add to your shell profile (~/.zshrc, ~/.bashrc, etc.):
+```bash
+echo 'export DISABLE_TELEMETRY=true' >> ~/.zshrc
+```
+
+For Docker users, add to your `docker-compose.yml`:
+```yaml
+environment:
+  - DISABLE_TELEMETRY=true
+```
+
+### Network Security
+
+🔒 **Socket Server**: The Blender addon creates a TCP socket server on port 9876:
+
+- **Binds to localhost only** - not accessible from other machines by default
+- **No authentication** - any local process can connect
+- Recommended for development/personal use only
+- For production use, consider implementing authentication or running in an isolated environment
+
+### Environment Variables
+
+See [`.env.example`](.env.example) for all available configuration options.
+
+## Limitations & Considerations
+
 - Complex operations might need to be broken down into smaller steps
+- Poly Haven requires downloading models, textures, and HDRI images. If you do not want to use it, please turn it off in the checkbox in Blender
+- Network connection required for external asset downloads and AI generation features
 
 
 ## Contributing

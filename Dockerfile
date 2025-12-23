@@ -21,6 +21,9 @@ COPY main.py ./
 COPY README.md ./
 COPY LICENSE ./
 
+# Note: .env files are excluded via .dockerignore for security
+# Configure via environment variables in docker-compose.yml instead
+
 # Install dependencies using UV
 RUN uv sync
 

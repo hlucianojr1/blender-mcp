@@ -24,13 +24,17 @@ bl_info = {
     "name": "Blender MCP",
     "author": "BlenderMCP",
     "version": (1, 2),
-    "blender": (3, 0, 0),
+    "blender": (3, 0, 0),  # Minimum version; tested up to 5.0
     "location": "View3D > Sidebar > BlenderMCP",
     "description": "Connect Blender to Claude via MCP",
     "category": "Interface",
 }
 
-RODIN_FREE_TRIAL_KEY = "k9TcfFoEhNd9cCPP2guHAHHHkctZHIRhZDywZ1euGUXwihbYLpOjQhofby80NJez"
+# SECURITY WARNING: Do not commit API keys to version control
+# The free trial key has been removed for security reasons.
+# Users should obtain their own API key from hyper3d.ai or fal.ai
+# and enter it in the BlenderMCP addon settings panel.
+RODIN_FREE_TRIAL_KEY = ""  # Removed for security - get your own key from hyper3d.ai
 
 # Add User-Agent as required by Poly Haven API
 REQ_HEADERS = requests.utils.default_headers()
@@ -212,6 +216,9 @@ class BlenderMCPServer:
             "get_hyper3d_status": self.get_hyper3d_status,
             "get_sketchfab_status": self.get_sketchfab_status,
             "get_hunyuan3d_status": self.get_hunyuan3d_status,
+            # Material system handlers (always available)
+            "apply_material_preset": self.apply_material_preset,
+            "auto_enhance_materials": self.auto_enhance_materials,
         }
 
         # Add Polyhaven handlers only if enabled
@@ -417,8 +424,18 @@ class BlenderMCPServer:
             return {"error": str(e)}
 
     def execute_code(self, code):
-        """Execute arbitrary Blender Python code"""
-        # This is powerful but potentially dangerous - use with caution
+        """Execute arbitrary Blender Python code
+        
+        SECURITY WARNING: This function executes arbitrary Python code in Blender.
+        Only use with trusted code from trusted sources. Malicious code can:
+        - Access the file system
+        - Modify or delete Blender data
+        - Execute system commands
+        - Potentially compromise system security
+        
+        This feature should be used with extreme caution in production environments.
+        """
+        # SECURITY: This is powerful but potentially dangerous - use with caution
         try:
             # Create a local namespace for execution
             namespace = {"bpy": bpy}
@@ -433,6 +450,304 @@ class BlenderMCPServer:
         except Exception as e:
             raise Exception(f"Code execution error: {str(e)}")
 
+    def apply_material_preset(self, object_name, material_props, preset_name="custom"):
+        """Apply a PBR material preset to an object"""
+        try:
+            obj = bpy.data.objects.get(object_name)
+            if not obj:
+                return {"error": f"Object '{object_name}' not found"}
+            
+            # Create or get material
+            mat_name = f"{preset_name}_{object_name}"
+            mat = bpy.data.materials.get(mat_name)
+            if not mat:
+                mat = bpy.data.materials.new(name=mat_name)
+            
+            # Enable nodes
+            mat.use_nodes = True
+            nodes = mat.node_tree.nodes
+            links = mat.node_tree.links
+            
+            # Clear existing nodes
+            nodes.clear()
+            
+            # Create output node
+            output = nodes.new('ShaderNodeOutputMaterial')
+            output.location = (300, 0)
+            
+            material_type = material_props.get('type', 'pbr')
+            
+            if material_type == 'glass':
+                # Create glass shader
+                glass = nodes.new('ShaderNodeBsdfGlass')
+                glass.location = (0, 0)
+                
+                # Set properties
+                if 'base_color' in material_props:
+                    glass.inputs['Color'].default_value = material_props['base_color']
+                if 'roughness' in material_props:
+                    glass.inputs['Roughness'].default_value = material_props['roughness']
+                if 'ior' in material_props:
+                    glass.inputs['IOR'].default_value = material_props['ior']
+                
+                links.new(glass.outputs['BSDF'], output.inputs['Surface'])
+                
+            elif material_type == 'emission':
+                # Create emission shader
+                emission = nodes.new('ShaderNodeEmission')
+                emission.location = (0, 0)
+                
+                if 'base_color' in material_props:
+                    emission.inputs['Color'].default_value = material_props['base_color']
+                if 'emission_strength' in material_props:
+                    emission.inputs['Strength'].default_value = material_props['emission_strength']
+                
+                links.new(emission.outputs['Emission'], output.inputs['Surface'])
+                
+            else:  # PBR material
+                # Create Principled BSDF
+                bsdf = nodes.new('ShaderNodeBsdfPrincipled')
+                bsdf.location = (0, 0)
+                
+                # Set base properties
+                if 'base_color' in material_props:
+                    bsdf.inputs['Base Color'].default_value = material_props['base_color']
+                if 'metallic' in material_props:
+                    bsdf.inputs['Metallic'].default_value = material_props['metallic']
+                if 'roughness' in material_props:
+                    bsdf.inputs['Roughness'].default_value = material_props['roughness']
+                if 'specular' in material_props:
+                    bsdf.inputs['Specular IOR Level'].default_value = material_props['specular']
+                if 'transmission' in material_props:
+                    bsdf.inputs['Transmission Weight'].default_value = material_props['transmission']
+                if 'emission_strength' in material_props:
+                    bsdf.inputs['Emission Strength'].default_value = material_props['emission_strength']
+                    if 'base_color' in material_props:
+                        bsdf.inputs['Emission Color'].default_value = material_props['base_color']
+                if 'clearcoat' in material_props:
+                    bsdf.inputs['Coat Weight'].default_value = material_props['clearcoat']
+                    if 'clearcoat_roughness' in material_props:
+                        bsdf.inputs['Coat Roughness'].default_value = material_props['clearcoat_roughness']
+                
+                # Add procedural textures if specified
+                if 'procedural' in material_props:
+                    proc = material_props['procedural']
+                    proc_type = proc.get('type', 'noise')
+                    
+                    if proc_type == 'noise':
+                        self._add_noise_procedural(nodes, links, bsdf, proc)
+                    elif proc_type in ['scratches_and_dirt', 'scratch', 'rust']:
+                        self._add_scratches_procedural(nodes, links, bsdf, proc)
+                    elif proc_type == 'wood_grain':
+                        self._add_wood_grain_procedural(nodes, links, bsdf, proc)
+                    elif proc_type == 'concrete' or proc_type == 'rock':
+                        self._add_concrete_procedural(nodes, links, bsdf, proc)
+                    elif proc_type == 'bump':
+                        self._add_bump_procedural(nodes, links, bsdf, proc)
+                
+                links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
+            
+            # Assign material to object
+            if len(obj.data.materials):
+                obj.data.materials[0] = mat
+            else:
+                obj.data.materials.append(mat)
+            
+            return {"success": True, "material_name": mat_name}
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def _add_noise_procedural(self, nodes, links, bsdf, proc):
+        """Add noise-based procedural texture"""
+        noise = nodes.new('ShaderNodeTexNoise')
+        noise.inputs['Scale'].default_value = proc.get('scale', 15.0)
+        noise.inputs['Detail'].default_value = proc.get('detail', 8.0)
+        noise.location = (-400, -200)
+        
+        # Mix with base roughness
+        if 'roughness_variation' in proc:
+            mix = nodes.new('ShaderNodeMixRGB')
+            mix.blend_type = 'MIX'
+            mix.inputs[0].default_value = proc['roughness_variation']
+            mix.location = (-200, -200)
+            links.new(noise.outputs['Fac'], mix.inputs[2])
+            links.new(mix.outputs[0], bsdf.inputs['Roughness'])
+    
+    def _add_scratches_procedural(self, nodes, links, bsdf, proc):
+        """Add scratches and dirt procedural texture"""
+        scale = proc.get('scale', 20.0)
+        detail = proc.get('detail', 5.0)
+        
+        # Scratch noise
+        scratch_noise = nodes.new('ShaderNodeTexNoise')
+        scratch_noise.inputs['Scale'].default_value = scale
+        scratch_noise.inputs['Detail'].default_value = detail
+        scratch_noise.location = (-600, -200)
+        
+        # Dirt noise
+        dirt_noise = nodes.new('ShaderNodeTexNoise')
+        dirt_noise.inputs['Scale'].default_value = scale * 0.5
+        dirt_noise.location = (-600, -400)
+        
+        # Mix
+        mix = nodes.new('ShaderNodeMix')
+        mix.data_type = 'RGBA'
+        mix.blend_type = 'MULTIPLY'
+        mix.inputs[0].default_value = 0.5
+        mix.location = (-400, -300)
+        
+        # Color ramp
+        ramp = nodes.new('ShaderNodeValToRGB')
+        ramp.color_ramp.elements[0].position = 0.4
+        ramp.color_ramp.elements[1].position = 0.6
+        ramp.location = (-200, -300)
+        
+        links.new(scratch_noise.outputs['Fac'], mix.inputs[6])
+        links.new(dirt_noise.outputs['Fac'], mix.inputs[7])
+        links.new(mix.outputs[2], ramp.inputs['Fac'])
+        links.new(ramp.outputs['Color'], bsdf.inputs['Roughness'])
+        
+        # Add bump
+        bump = nodes.new('ShaderNodeBump')
+        bump.inputs['Strength'].default_value = 0.3
+        bump.location = (-200, -500)
+        links.new(ramp.outputs['Color'], bump.inputs['Height'])
+        links.new(bump.outputs['Normal'], bsdf.inputs['Normal'])
+    
+    def _add_wood_grain_procedural(self, nodes, links, bsdf, proc):
+        """Add wood grain procedural texture"""
+        scale = proc.get('scale', 5.0)
+        detail = proc.get('detail', 8.0)
+        
+        # Wave texture
+        wave = nodes.new('ShaderNodeTexWave')
+        wave.wave_type = 'RINGS'
+        wave.inputs['Scale'].default_value = scale
+        wave.inputs['Distortion'].default_value = 2.0
+        wave.inputs['Detail'].default_value = detail
+        wave.location = (-600, 0)
+        
+        # Noise for variation
+        noise = nodes.new('ShaderNodeTexNoise')
+        noise.inputs['Scale'].default_value = scale * 3
+        noise.location = (-600, -200)
+        
+        # Mix
+        mix = nodes.new('ShaderNodeMix')
+        mix.data_type = 'RGBA'
+        mix.blend_type = 'MULTIPLY'
+        mix.inputs[0].default_value = 0.3
+        mix.location = (-400, -100)
+        
+        # Color ramp
+        ramp = nodes.new('ShaderNodeValToRGB')
+        ramp.location = (-200, -100)
+        
+        links.new(wave.outputs['Color'], mix.inputs[6])
+        links.new(noise.outputs['Fac'], mix.inputs[7])
+        links.new(mix.outputs[2], ramp.inputs['Fac'])
+        links.new(ramp.outputs['Color'], bsdf.inputs['Base Color'])
+        
+        # Bump
+        bump = nodes.new('ShaderNodeBump')
+        bump.inputs['Strength'].default_value = 0.1
+        bump.location = (-200, -300)
+        links.new(ramp.outputs['Color'], bump.inputs['Height'])
+        links.new(bump.outputs['Normal'], bsdf.inputs['Normal'])
+    
+    def _add_concrete_procedural(self, nodes, links, bsdf, proc):
+        """Add concrete/rock procedural texture"""
+        scale = proc.get('scale', 8.0)
+        detail = proc.get('detail', 4.0)
+        
+        # Noise texture
+        noise = nodes.new('ShaderNodeTexNoise')
+        noise.inputs['Scale'].default_value = scale
+        noise.inputs['Detail'].default_value = detail
+        noise.location = (-400, -200)
+        
+        # Bump for surface variation
+        bump = nodes.new('ShaderNodeBump')
+        bump.inputs['Strength'].default_value = 0.5
+        bump.location = (-200, -200)
+        
+        links.new(noise.outputs['Fac'], bump.inputs['Height'])
+        links.new(bump.outputs['Normal'], bsdf.inputs['Normal'])
+        
+        # Add to roughness for variation
+        links.new(noise.outputs['Fac'], bsdf.inputs['Roughness'])
+    
+    def _add_bump_procedural(self, nodes, links, bsdf, proc):
+        """Add simple bump map"""
+        scale = proc.get('scale', 200.0)
+        
+        noise = nodes.new('ShaderNodeTexNoise')
+        noise.inputs['Scale'].default_value = scale
+        noise.location = (-400, -200)
+        
+        bump = nodes.new('ShaderNodeBump')
+        bump.inputs['Strength'].default_value = 0.2
+        bump.location = (-200, -200)
+        
+        links.new(noise.outputs['Fac'], bump.inputs['Height'])
+        links.new(bump.outputs['Normal'], bsdf.inputs['Normal'])
+    
+    def auto_enhance_materials(self, object_name=None, aggressive=False):
+        """Automatically enhance materials on objects"""
+        try:
+            # Import material suggestions
+            from .materials import get_suggested_material, MATERIAL_PRESETS
+            
+            enhanced = []
+            objects_to_enhance = []
+            
+            if object_name:
+                obj = bpy.data.objects.get(object_name)
+                if obj:
+                    objects_to_enhance = [obj]
+                else:
+                    return {"error": f"Object '{object_name}' not found"}
+            else:
+                # Enhance all mesh objects in scene
+                objects_to_enhance = [obj for obj in bpy.context.scene.objects if obj.type == 'MESH']
+            
+            for obj in objects_to_enhance:
+                # Get suggested material
+                suggested = get_suggested_material(obj.name)
+                material_props = MATERIAL_PRESETS[suggested].copy()
+                
+                # If aggressive, add more procedural detail
+                if aggressive and 'procedural' not in material_props:
+                    # Add procedural detail based on material type
+                    if 'metal' in suggested:
+                        material_props['procedural'] = {
+                            'type': 'scratches_and_dirt',
+                            'scale': 15.0,
+                            'detail': 6.0,
+                            'roughness_variation': 0.4
+                        }
+                    elif 'paint' in suggested:
+                        material_props['procedural'] = {
+                            'type': 'scratches_and_dirt',
+                            'scale': 25.0,
+                            'detail': 5.0
+                        }
+                
+                # Apply the material
+                result = self.apply_material_preset(obj.name, material_props, suggested)
+                
+                if result.get("success"):
+                    enhanced.append(f"{obj.name} -> {suggested}")
+            
+            return {
+                "success": True,
+                "enhanced_count": len(enhanced),
+                "details": enhanced
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
 
 
     def get_polyhaven_categories(self, asset_type):

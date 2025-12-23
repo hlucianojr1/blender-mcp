@@ -1,16 +1,70 @@
 # Python-generated files
 __pycache__/
 *.py[oc]
+*.py[cod]
+*$py.class
+*.so
+.Python
 build/
+develop-eggs/
 dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
 wheels/
 *.egg-info
+.installed.cfg
+*.egg
 
 # Virtual environments
 .venv
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 
 # macOS
 .DS_Store
+.AppleDouble
+.LSOverride
 
-# Local config secrets
-src/blender_mcp/config.py
+# Environment files - NEVER commit these!
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Blender backup files
+*.blend1
+*.blend2
+
+# API Keys and Secrets - NEVER commit these!
+*secret*.json
+*apikey*.json
+*api_key*.json
+credentials.json
+secrets.json
+
+# UV package manager
+.uv/
+uv.lock

@@ -16,6 +16,8 @@ from urllib.parse import urlparse
 # Import telemetry
 from .telemetry import record_startup, get_telemetry
 from .telemetry_decorator import telemetry_tool
+# Import material system
+from .materials import MATERIAL_PRESETS, get_suggested_material, list_available_materials, get_material_info
 
 # Configure logging
 logging.basicConfig(level=logging.INFO,
@@ -333,6 +335,10 @@ def get_viewport_screenshot(ctx: Context, max_size: int = 800) -> Image:
 def execute_blender_code(ctx: Context, code: str) -> str:
     """
     Execute arbitrary Python code in Blender. Make sure to do it step-by-step by breaking it into smaller chunks.
+    
+    ⚠️ SECURITY WARNING: This executes arbitrary code with full Blender Python API access.
+    Only use with trusted code. Malicious code can access files, modify data, or compromise security.
+    This feature should be disabled in multi-user or untrusted environments.
 
     Parameters:
     - code: The Python code to execute
@@ -342,6 +348,256 @@ def execute_blender_code(ctx: Context, code: str) -> str:
         blender = get_blender_connection()
         result = blender.send_command("execute_code", {"code": code})
         return f"Code executed successfully: {result.get('result', '')}"
+    except Exception as e:
+        logger.error(f"Error executing code: {str(e)}")
+        return f"Error executing code: {str(e)}"
+
+@telemetry_tool("apply_material_preset")
+@mcp.tool()
+def apply_material_preset(
+    ctx: Context,
+    object_name: str,
+    material_preset: str,
+    color: list[float] = None
+) -> str:
+    """
+    Apply a PBR material preset to an object in Blender.
+    
+    Parameters:
+    - object_name: Name of the object to apply material to
+    - material_preset: Name of the material preset to apply (use list_material_presets to see available options)
+    - color: Optional RGBA color override [R, G, B, A] where values are 0.0-1.0
+    
+    Returns a message indicating success or failure.
+    """
+    try:
+        blender = get_blender_connection()
+        
+        # Validate material preset exists
+        if material_preset not in MATERIAL_PRESETS:
+            available = ", ".join(list_available_materials())
+            return f"Error: Material preset '{material_preset}' not found. Available presets: {available}"
+        
+        # Get material properties
+        material_props = MATERIAL_PRESETS[material_preset].copy()
+        
+        # Override color if provided
+        if color:
+            if len(color) not in [3, 4]:
+                return "Error: Color must be [R, G, B] or [R, G, B, A] with values 0.0-1.0"
+            if len(color) == 3:
+                color.append(1.0)  # Add alpha
+            material_props["base_color"] = tuple(color)
+        
+        result = blender.send_command("apply_material_preset", {
+            "object_name": object_name,
+            "material_props": material_props,
+            "preset_name": material_preset
+        })
+        
+        if "error" in result:
+            return f"Error: {result['error']}"
+        
+        if result.get("success"):
+            return f"Successfully applied '{material_preset}' material to {object_name}"
+        else:
+            return f"Failed to apply material: {result.get('message', 'Unknown error')}"
+    except Exception as e:
+        logger.error(f"Error applying material preset: {str(e)}")
+        return f"Error applying material preset: {str(e)}"
+
+@telemetry_tool("auto_enhance_materials")
+@mcp.tool()
+def auto_enhance_materials(
+    ctx: Context,
+    object_name: str = None,
+    aggressive: bool = False
+) -> str:
+    """
+    Automatically enhance materials on objects based on their names and context.
+    If no object specified, enhances all objects in the scene.
+    
+    Parameters:
+    - object_name: Optional name of specific object to enhance. If None, enhances all objects
+    - aggressive: If True, applies more dramatic enhancements (higher detail, more procedural effects)
+    
+    Returns a message with details of enhancements applied.
+    """
+    try:
+        blender = get_blender_connection()
+        
+        result = blender.send_command("auto_enhance_materials", {
+            "object_name": object_name,
+            "aggressive": aggressive
+        })
+        
+        if "error" in result:
+            return f"Error: {result['error']}"
+        
+        if result.get("success"):
+            enhanced_count = result.get("enhanced_count", 0)
+            details = result.get("details", [])
+            
+            output = f"Successfully enhanced {enhanced_count} object(s):\n"
+            for detail in details:
+                output += f"- {detail}\n"
+            
+            return output
+        else:
+            return f"Failed to enhance materials: {result.get('message', 'Unknown error')}"
+    except Exception as e:
+        logger.error(f"Error auto-enhancing materials: {str(e)}")
+        return f"Error auto-enhancing materials: {str(e)}"
+
+@telemetry_tool("list_material_presets")
+@mcp.tool()
+def list_material_presets(ctx: Context, category: str = None) -> str:
+    """
+    List all available material presets.
+    
+    Parameters:
+    - category: Optional filter by category (metals, glass, paint, plastic, wood, fabric, stone, special)
+    
+    Returns a formatted list of available material presets.
+    """
+    try:
+        materials = list_available_materials()
+        
+        # Categorize materials
+        categories = {
+            "metals": ["weathered_metal", "brushed_metal", "rusted_metal", "chrome"],
+            "glass": ["clear_glass", "frosted_glass", "tinted_glass"],
+            "paint": ["glossy_paint", "matte_paint", "weathered_paint", "car_paint"],
+            "plastic": ["glossy_plastic", "rubber"],
+            "wood": ["polished_wood", "rough_wood"],
+            "fabric": ["fabric"],
+            "stone": ["concrete", "stone"],
+            "special": ["emission", "glow"]
+        }
+        
+        output = "Available Material Presets:\n\n"
+        
+        if category:
+            cat_lower = category.lower()
+            if cat_lower in categories:
+                output += f"{category.upper()}:\n"
+                for mat in categories[cat_lower]:
+                    info = get_material_info(mat)
+                    output += f"  - {mat}: {info.get('type', 'pbr')} material\n"
+            else:
+                return f"Category '{category}' not found. Available categories: {', '.join(categories.keys())}"
+        else:
+            for cat_name, cat_materials in categories.items():
+                output += f"{cat_name.upper()}:\n"
+                for mat in cat_materials:
+                    info = get_material_info(mat)
+                    output += f"  - {mat}: {info.get('type', 'pbr')} material\n"
+                output += "\n"
+        
+        return output
+    except Exception as e:
+        logger.error(f"Error listing material presets: {str(e)}")
+        return f"Error listing material presets: {str(e)}"
+
+@telemetry_tool("suggest_material")
+@mcp.tool()
+def suggest_material(ctx: Context, object_name: str) -> str:
+    """
+    Get a suggested material preset based on an object's name.
+    
+    Parameters:
+    - object_name: Name of the object to get material suggestion for
+    
+    Returns the suggested material preset name and details.
+    """
+    try:
+        suggested = get_suggested_material(object_name)
+        material_info = get_material_info(suggested)
+        
+        output = f"Suggested material for '{object_name}': {suggested}\n"
+        output += f"Type: {material_info.get('type', 'pbr')}\n"
+        
+        if 'base_color' in material_info:
+            r, g, b, a = material_info['base_color']
+            output += f"Base Color: RGB({r:.2f}, {g:.2f}, {b:.2f})\n"
+        
+        if 'metallic' in material_info:
+            output += f"Metallic: {material_info['metallic']}\n"
+        
+        if 'roughness' in material_info:
+            output += f"Roughness: {material_info['roughness']}\n"
+        
+        output += f"\nTo apply: use apply_material_preset('{object_name}', '{suggested}')"
+        
+        return output
+    except Exception as e:
+        logger.error(f"Error suggesting material: {str(e)}")
+        return f"Error suggesting material: {str(e)}"
+
+@telemetry_tool("create_custom_pbr_material")
+@mcp.tool()
+def create_custom_pbr_material(
+    ctx: Context,
+    object_name: str,
+    base_color: list[float],
+    metallic: float = 0.0,
+    roughness: float = 0.5,
+    specular: float = 0.5,
+    transmission: float = 0.0,
+    emission_strength: float = 0.0,
+    clearcoat: float = 0.0
+) -> str:
+    """
+    Create and apply a custom PBR material to an object with specific properties.
+    
+    Parameters:
+    - object_name: Name of the object to apply material to
+    - base_color: RGBA color [R, G, B, A] where values are 0.0-1.0
+    - metallic: Metallic value 0.0-1.0 (0=dielectric, 1=metal)
+    - roughness: Roughness value 0.0-1.0 (0=glossy, 1=rough)
+    - specular: Specular intensity 0.0-1.0
+    - transmission: Transmission/transparency 0.0-1.0
+    - emission_strength: Emission strength (0=no emission)
+    - clearcoat: Clearcoat layer 0.0-1.0
+    
+    Returns a message indicating success or failure.
+    """
+    try:
+        blender = get_blender_connection()
+        
+        if len(base_color) not in [3, 4]:
+            return "Error: base_color must be [R, G, B] or [R, G, B, A] with values 0.0-1.0"
+        
+        if len(base_color) == 3:
+            base_color.append(1.0)
+        
+        material_props = {
+            "type": "pbr",
+            "base_color": tuple(base_color),
+            "metallic": max(0.0, min(1.0, metallic)),
+            "roughness": max(0.0, min(1.0, roughness)),
+            "specular": max(0.0, min(1.0, specular)),
+            "transmission": max(0.0, min(1.0, transmission)),
+            "emission_strength": max(0.0, emission_strength),
+            "clearcoat": max(0.0, min(1.0, clearcoat))
+        }
+        
+        result = blender.send_command("apply_material_preset", {
+            "object_name": object_name,
+            "material_props": material_props,
+            "preset_name": "custom"
+        })
+        
+        if "error" in result:
+            return f"Error: {result['error']}"
+        
+        if result.get("success"):
+            return f"Successfully applied custom PBR material to {object_name}"
+        else:
+            return f"Failed to apply material: {result.get('message', 'Unknown error')}"
+    except Exception as e:
+        logger.error(f"Error creating custom material: {str(e)}")
+        return f"Error creating custom material: {str(e)}"
     except Exception as e:
         logger.error(f"Error executing code: {str(e)}")
         return f"Error executing code: {str(e)}"
@@ -1085,6 +1341,43 @@ def asset_creation_strategy() -> str:
 
                 You can reuse assets previous generated by running python code to duplicate the object, without creating another generation task.
 
+    2. MATERIAL ENHANCEMENT (CRITICAL FOR VISUAL QUALITY):
+        After importing or creating ANY 3D object, ALWAYS enhance its materials:
+        
+        a) Automatic Material Enhancement:
+           - Use auto_enhance_materials() to automatically apply realistic materials to all objects
+           - For more dramatic improvements, use auto_enhance_materials(aggressive=True)
+           - This analyzes object names and applies appropriate PBR materials with procedural details
+        
+        b) Manual Material Application:
+           - Use list_material_presets() to see all available material types
+           - Use suggest_material(object_name) to get a recommendation for a specific object
+           - Use apply_material_preset(object_name, material_preset) to apply a specific material
+           
+        c) Available Material Categories:
+           - Metals: weathered_metal, brushed_metal, rusted_metal, chrome
+           - Glass: clear_glass, frosted_glass, tinted_glass
+           - Paint: glossy_paint, matte_paint, weathered_paint, car_paint
+           - Plastic: glossy_plastic, rubber
+           - Wood: polished_wood, rough_wood
+           - Stone: concrete, stone
+           - Special: emission, glow
+        
+        d) Custom Materials:
+           - Use create_custom_pbr_material() for specific color/property combinations
+           - Adjust metallic (0=plastic, 1=metal), roughness (0=glossy, 1=rough)
+           - Add transmission for transparency, emission for glow effects
+        
+        e) Material Enhancement Workflow:
+           1. Import/create object
+           2. Check the object with get_object_info() to see current materials
+           3. Apply auto_enhance_materials() for quick improvement
+           4. OR use apply_material_preset() for specific material types
+           5. Verify improvement with get_viewport_screenshot()
+        
+        IMPORTANT: Material enhancement dramatically improves visual quality. AI-generated models
+        often have basic or missing materials. Always apply materials after importing models.
+
     3. Always check the world_bounding_box for each item so that:
         - Ensure that all objects that should not be clipping are not clipping.
         - Items have right spatial relationship.
@@ -1107,8 +1400,34 @@ def asset_creation_strategy() -> str:
 # Main execution
 
 def main():
-    """Run the MCP server"""
-    mcp.run()
+    """Run the MCP server
+    
+    Supports two transports:
+    - stdio (default): For direct MCP client connections
+    - sse: For HTTP-based connections (use with Docker)
+    
+    Set MCP_TRANSPORT=sse and MCP_PORT=8080 for SSE mode.
+    """
+    transport = os.getenv("MCP_TRANSPORT", "stdio").lower()
+    
+    if transport in ["sse", "http", "streamable-http"]:
+        port = int(os.getenv("MCP_PORT", "8080"))
+        host = os.getenv("MCP_HOST", "0.0.0.0")
+        logger.info(f"Starting BlenderMCP server with {transport} transport on {host}:{port}")
+        # Set host and port in server settings
+        mcp.settings.host = host
+        mcp.settings.port = port
+        # Use the appropriate async run method for the transport
+        if transport == "sse":
+            asyncio.run(mcp.run_sse_async())
+        elif transport == "streamable-http":
+            asyncio.run(mcp.run_streamable_http_async())
+        else:  # http
+            # For http, use streamable-http as it's the recommended default
+            asyncio.run(mcp.run_streamable_http_async())
+    else:
+        logger.info("Starting BlenderMCP server with stdio transport")
+        mcp.run()
 
 if __name__ == "__main__":
     main()

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   blender-mcp:
     build: .
@@ -8,6 +6,11 @@ services:
       # Set to host.docker.internal to connect to Blender running on host
       - BLENDER_HOST=host.docker.internal
       - BLENDER_PORT=9876
+      # Use SSE transport for persistent HTTP server
+      - MCP_TRANSPORT=sse
+      - MCP_PORT=8080
+    ports:
+      - "8080:8080"
     networks:
       - blender-network
     # Add extra_hosts for Linux systems to access host services
@@ -17,9 +20,9 @@ services:
     # Optional: map logs to host for debugging
     volumes:
       - ./logs:/app/logs
-    # Health check to verify the service is running
+    # Health check to verify the MCP server is running
     healthcheck:
-      test: ["CMD", "python", "-c", "import socket; s = socket.socket(); s.connect(('${BLENDER_HOST:-host.docker.internal}', ${BLENDER_PORT:-9876})); s.close()"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/sse"]
       interval: 30s
       timeout: 10s
       retries: 3

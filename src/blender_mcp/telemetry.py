@@ -87,8 +87,21 @@ class TelemetryCollector:
     def __init__(self):
         """Initialize telemetry collector"""
         # Import config here to avoid circular imports
-        from .config import telemetry_config
-        self.config = telemetry_config
+        try:
+            from .config import telemetry_config
+            self.config = telemetry_config
+        except ImportError as e:
+            logger.warning(f"Failed to import telemetry config: {e}. Telemetry will be disabled.")
+            # Create a minimal disabled config
+            from dataclasses import dataclass
+            @dataclass
+            class DisabledConfig:
+                enabled: bool = False
+                supabase_url: str = ""
+                supabase_anon_key: str = ""
+                collect_prompts: bool = False
+                max_prompt_length: int = 500
+            self.config = DisabledConfig()
 
         # Check if disabled via environment variables
         if self._is_disabled():
