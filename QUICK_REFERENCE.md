@@ -1,6 +1,53 @@
 # Quick Reference: Complete Enhancement Pipeline
 
-## One-Command Enhancement
+## FASTEST: Scene Templates (NEW!)
+
+```python
+# ONE command for instant professional results!
+# Applies all 6 enhancement systems in 2-5 seconds
+
+# Get recommendation
+suggest_scene_template("professional product photo")
+# → Recommends: product_studio_pro
+
+# Apply complete template
+apply_scene_template("product_studio_pro", "MyProduct")
+# ✓ Geometry enhanced (subdivision, beveling)
+# ✓ Materials applied (PBR auto-enhancement)
+# ✓ Lighting setup (HDRI + rigs + atmosphere)
+# ✓ Composition configured (camera + framing + rules)
+# ✓ Color grading applied (tone mapping + exposure)
+# ✓ Render settings optimized
+
+# Done! Production quality in seconds
+```
+
+**12 Professional Templates:**
+- **Product:** studio_pro, lifestyle, hero_dramatic
+- **Portrait:** professional, cinematic, noir
+- **Landscape:** epic, classic, moody  
+- **Architecture:** hero, technical, dramatic
+
+**Browse Templates:**
+```python
+list_scene_templates("product")  # List category
+list_scene_templates()           # List all
+```
+
+**Customize Template:**
+```python
+custom = {
+    "lighting": {"hdri": "sunset", "hdri_strength": 1.5},
+    "color_grading": {"exposure": 0.3}
+}
+customize_scene_template("product_studio_pro", custom)
+```
+
+---
+
+## Manual Enhancement Pipeline
+
+### One-Command Enhancement
 
 ```python
 # Generate AI model
@@ -19,6 +66,28 @@ get_viewport_screenshot()
 ---
 
 ## System Quick Reference
+
+### 0. Scene Templates (FASTEST!)
+
+```python
+# Apply complete professional setup
+apply_scene_template("product_studio_pro", "MyObject")
+
+# Get AI recommendation
+suggest_scene_template("your scene description")
+
+# List templates
+list_scene_templates("product")  # By category
+list_scene_templates()           # All
+
+# Customize template
+customizations = {"lighting": {"hdri": "sunset"}}
+customize_scene_template("template_key", customizations)
+```
+
+**Available Categories:** product, portrait, landscape, architecture
+
+---
 
 ### 1. Material System
 

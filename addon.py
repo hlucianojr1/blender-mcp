@@ -243,6 +243,8 @@ class BlenderMCPServer:
             "apply_lut_preset": self.apply_lut_preset,
             "setup_tone_mapping": self.setup_tone_mapping,
             "add_color_effects": self.add_color_effects,
+            # Scene templates system handlers (always available)
+            "apply_scene_template": self.apply_scene_template,
         }
 
         # Add Polyhaven handlers only if enabled
@@ -1965,6 +1967,304 @@ class BlenderMCPServer:
         except Exception as e:
             return {"error": str(e)}
 
+    # ==================== COLOR GRADING HANDLERS ====================
+
+    def apply_color_grade(self, preset="cinematic_standard", use_compositor=True):
+        """Apply complete color grade preset (LUT + tone mapping + effects)"""
+        try:
+            from .color_grading import COLOR_GRADE_PRESETS
+            
+            if preset not in COLOR_GRADE_PRESETS:
+                return {"error": f"Unknown preset '{preset}'. Available: {', '.join(COLOR_GRADE_PRESETS.keys())}"}
+            
+            grade = COLOR_GRADE_PRESETS[preset]
+            
+            # Apply LUT
+            self.apply_lut_preset(lut_preset=grade["lut"])
+            
+            # Apply tone mapping
+            self.setup_tone_mapping(tone_mapping=grade["tone_mapping"])
+            
+            # Apply effects
+            if use_compositor and grade["effects"]:
+                self.add_color_effects(effects=grade["effects"])
+            
+            return {
+                "message": f"Color grade '{grade['name']}' applied successfully",
+                "preset": preset,
+                "lut": grade["lut"],
+                "tone_mapping": grade["tone_mapping"],
+                "effects": grade["effects"]
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    def apply_lut_preset(self, lut_preset="cinematic_neutral"):
+        """Apply LUT (Look-Up Table) color grading preset"""
+        try:
+            from .color_grading import LUT_PRESETS
+            
+            if lut_preset not in LUT_PRESETS:
+                return {"error": f"Unknown LUT '{lut_preset}'. Available: {', '.join(LUT_PRESETS.keys())}"}
+            
+            lut = LUT_PRESETS[lut_preset]
+            
+            # Enable compositor
+            bpy.context.scene.use_nodes = True
+            tree = bpy.context.scene.node_tree
+            nodes = tree.nodes
+            
+            # Clear existing color grading nodes
+            for node in nodes:
+                if node.name.startswith("LUT_") or node.name.startswith("Saturation_") or node.name.startswith("Contrast_"):
+                    nodes.remove(node)
+            
+            # Get or create render layers node
+            render_layers = None
+            for node in nodes:
+                if node.type == 'R_LAYERS':
+                    render_layers = node
+                    break
+            
+            if not render_layers:
+                render_layers = nodes.new('CompositorNodeRLayers')
+                render_layers.location = (0, 0)
+            
+            # Get or create composite node
+            composite = None
+            for node in nodes:
+                if node.type == 'COMPOSITE':
+                    composite = node
+                    break
+            
+            if not composite:
+                composite = nodes.new('CompositorNodeComposite')
+                composite.location = (800, 0)
+            
+            # Create color balance node (LUT)
+            color_balance = nodes.new('CompositorNodeColorBalance')
+            color_balance.name = f"LUT_{lut_preset}"
+            color_balance.location = (200, 0)
+            color_balance.lift = lut["lift"]
+            color_balance.gamma = lut["gamma"]
+            color_balance.gain = lut["gain"]
+            
+            # Create hue/saturation node
+            hue_sat = nodes.new('CompositorNodeHueSat')
+            hue_sat.name = f"Saturation_{lut_preset}"
+            hue_sat.location = (400, 0)
+            hue_sat.inputs['Saturation'].default_value = lut["saturation"]
+            
+            # Create bright/contrast node
+            bright_contrast = nodes.new('CompositorNodeBrightContrast')
+            bright_contrast.name = f"Contrast_{lut_preset}"
+            bright_contrast.location = (600, 0)
+            bright_contrast.inputs['Bright'].default_value = lut["brightness"]
+            bright_contrast.inputs['Contrast'].default_value = lut["contrast"] - 1.0
+            
+            # Link nodes
+            links = tree.links
+            
+            # Clear existing links to composite
+            for link in composite.inputs['Image'].links:
+                links.remove(link)
+            
+            # Create new links
+            links.new(render_layers.outputs['Image'], color_balance.inputs['Image'])
+            links.new(color_balance.outputs['Image'], hue_sat.inputs['Image'])
+            links.new(hue_sat.outputs['Image'], bright_contrast.inputs['Image'])
+            links.new(bright_contrast.outputs['Image'], composite.inputs['Image'])
+            
+            return {
+                "message": f"LUT '{lut['name']}' applied",
+                "lut": lut_preset
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    def setup_tone_mapping(self, tone_mapping="filmic", exposure=0.0, gamma=1.0):
+        """Configure tone mapping (view transform) in color management"""
+        try:
+            from .color_grading import TONE_MAPPING
+            
+            if tone_mapping not in TONE_MAPPING:
+                return {"error": f"Unknown tone mapping '{tone_mapping}'. Available: {', '.join(TONE_MAPPING.keys())}"}
+            
+            tm = TONE_MAPPING[tone_mapping]
+            
+            # Set view transform
+            scene = bpy.context.scene
+            scene.view_settings.view_transform = tm["view_transform"]
+            scene.view_settings.look = tm["look"]
+            scene.view_settings.exposure = exposure
+            scene.view_settings.gamma = gamma
+            
+            return {
+                "message": f"Tone mapping '{tm['name']}' configured",
+                "view_transform": tm["view_transform"],
+                "look": tm["look"],
+                "exposure": exposure,
+                "gamma": gamma
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    def add_color_effects(self, effects=None):
+        """Add color effects via compositor nodes"""
+        try:
+            from .color_grading import COLOR_EFFECTS
+            
+            if effects is None:
+                effects = ["vignette_subtle", "film_grain_light"]
+            
+            # Validate effects
+            invalid = [e for e in effects if e not in COLOR_EFFECTS]
+            if invalid:
+                return {"error": f"Unknown effects: {', '.join(invalid)}. Available: {', '.join(COLOR_EFFECTS.keys())}"}
+            
+            # Enable compositor
+            bpy.context.scene.use_nodes = True
+            tree = bpy.context.scene.node_tree
+            nodes = tree.nodes
+            links = tree.links
+            
+            # Find the last node before composite (should be contrast node from LUT)
+            composite = None
+            for node in nodes:
+                if node.type == 'COMPOSITE':
+                    composite = node
+                    break
+            
+            if not composite:
+                composite = nodes.new('CompositorNodeComposite')
+                composite.location = (1200, 0)
+            
+            # Find input to composite
+            current_node = None
+            current_output = None
+            if composite.inputs['Image'].links:
+                link = composite.inputs['Image'].links[0]
+                current_node = link.from_node
+                current_output = link.from_socket
+            else:
+                # Find render layers
+                for node in nodes:
+                    if node.type == 'R_LAYERS':
+                        current_node = node
+                        current_output = node.outputs['Image']
+                        break
+            
+            if not current_node:
+                return {"error": "No input found for compositor"}
+            
+            # Disconnect composite input
+            for link in composite.inputs['Image'].links:
+                links.remove(link)
+            
+            x_offset = current_node.location[0] + 200
+            y_offset = 0
+            
+            # Add each effect
+            for effect_key in effects:
+                effect = COLOR_EFFECTS[effect_key]
+                
+                if "vignette" in effect_key:
+                    # Create vignette using ellipse mask
+                    ellipse = nodes.new('CompositorNodeEllipseMask')
+                    ellipse.name = f"Vignette_Mask_{effect_key}"
+                    ellipse.location = (x_offset, y_offset - 200)
+                    ellipse.width = 0.8
+                    ellipse.height = 0.8
+                    
+                    blur = nodes.new('CompositorNodeBlur')
+                    blur.name = f"Vignette_Blur_{effect_key}"
+                    blur.location = (x_offset + 150, y_offset - 200)
+                    blur.size_x = 100
+                    blur.size_y = 100
+                    blur.filter_type = 'GAUSS'
+                    
+                    mix = nodes.new('CompositorNodeMixRGB')
+                    mix.name = f"Vignette_{effect_key}"
+                    mix.location = (x_offset + 300, y_offset)
+                    mix.blend_type = 'MULTIPLY'
+                    mix.inputs['Fac'].default_value = effect["vignette_strength"]
+                    mix.inputs['Color2'].default_value = (0, 0, 0, 1)
+                    
+                    # Link vignette nodes
+                    links.new(ellipse.outputs['Mask'], blur.inputs['Image'])
+                    links.new(blur.outputs['Image'], mix.inputs['Fac'])
+                    links.new(current_output, mix.inputs['Image'])
+                    
+                    current_node = mix
+                    current_output = mix.outputs['Image']
+                    x_offset += 350
+                
+                elif "grain" in effect_key:
+                    # Create film grain using noise texture
+                    mix = nodes.new('CompositorNodeMixRGB')
+                    mix.name = f"Grain_{effect_key}"
+                    mix.location = (x_offset, y_offset)
+                    mix.blend_type = 'OVERLAY'
+                    mix.inputs['Fac'].default_value = effect["grain_strength"]
+                    
+                    # Note: Actual grain requires render or texture input
+                    # This is a placeholder - would need noise texture in practice
+                    links.new(current_output, mix.inputs['Image'])
+                    
+                    current_node = mix
+                    current_output = mix.outputs['Image']
+                    x_offset += 200
+                
+                elif "bloom" in effect_key:
+                    # Create bloom using glare node
+                    glare = nodes.new('CompositorNodeGlare')
+                    glare.name = f"Bloom_{effect_key}"
+                    glare.location = (x_offset, y_offset)
+                    glare.glare_type = 'FOG_GLOW'
+                    glare.quality = 'HIGH'
+                    glare.threshold = effect.get("bloom_threshold", 1.0)
+                    glare.size = int(effect.get("bloom_radius", 6.5))
+                    glare.mix = effect.get("bloom_intensity", 0.1) * -1
+                    
+                    links.new(current_output, glare.inputs['Image'])
+                    
+                    current_node = glare
+                    current_output = glare.outputs['Image']
+                    x_offset += 200
+                
+                elif "chromatic_aberration" in effect_key or "lens_distortion" in effect_key:
+                    # Create lens distortion
+                    lens = nodes.new('CompositorNodeLensdist')
+                    lens.name = f"Lens_{effect_key}"
+                    lens.location = (x_offset, y_offset)
+                    
+                    if "chromatic" in effect_key:
+                        lens.inputs['Dispersion'].default_value = effect.get("ca_strength", 0.003)
+                    else:
+                        lens.inputs['Distort'].default_value = effect.get("distortion", 0.02)
+                        lens.inputs['Dispersion'].default_value = effect.get("dispersion", 0.01)
+                    
+                    links.new(current_output, lens.inputs['Image'])
+                    
+                    current_node = lens
+                    current_output = lens.outputs['Image']
+                    x_offset += 200
+            
+            # Connect final output to composite
+            links.new(current_output, composite.inputs['Image'])
+            composite.location = (x_offset + 100, 0)
+            
+            return {
+                "message": f"Applied {len(effects)} color effects",
+                "effects": effects
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
     def get_polyhaven_categories(self, asset_type):
         """Get categories for a specific asset type from Polyhaven"""
         try:
@@ -1978,6 +2278,184 @@ class BlenderMCPServer:
                 return {"error": f"API request failed with status code {response.status_code}"}
         except Exception as e:
             return {"error": str(e)}
+
+    def apply_scene_template(self, template_key, target_object=None, auto_render=False, template=None):
+        """
+        Apply a complete professional scene template combining all enhancement systems.
+        This is the master function that orchestrates the entire enhancement pipeline.
+        """
+        try:
+            import scene_templates_data
+            SCENE_TEMPLATES = scene_templates_data.SCENE_TEMPLATES
+            
+            # Get template
+            if template is None:
+                if template_key not in SCENE_TEMPLATES:
+                    return {"error": f"Template '{template_key}' not found"}
+                template = SCENE_TEMPLATES[template_key]
+            
+            # Track results
+            results = {
+                "template_name": template["name"],
+                "template_key": template_key,
+                "steps": {}
+            }
+            
+            # Determine target object
+            if target_object is None:
+                # Auto-detect: Use selected object or find largest mesh object
+                if bpy.context.selected_objects:
+                    target_object = bpy.context.selected_objects[0].name
+                else:
+                    # Find largest mesh object
+                    mesh_objects = [obj for obj in bpy.data.objects if obj.type == 'MESH']
+                    if mesh_objects:
+                        target_object = max(mesh_objects, key=lambda o: len(o.data.vertices)).name
+                    else:
+                        return {"error": "No mesh objects found in scene"}
+            
+            # Store object name for later steps
+            obj_name = target_object
+            
+            # ========== STEP 1: GEOMETRY ENHANCEMENT ==========
+            geom_settings = template["geometry"]
+            try:
+                # Apply enhancement preset
+                preset = geom_settings["enhancement_preset"]
+                result = self.apply_enhancement_preset(obj_name, preset)
+                
+                # Apply additional settings if specified
+                if "subdivision_levels" in geom_settings:
+                    self.apply_subdivision_surface(obj_name, geom_settings["subdivision_levels"])
+                
+                if "edge_bevel" in geom_settings:
+                    self.add_edge_bevel(obj_name, geom_settings["edge_bevel"])
+                
+                if "auto_smooth" in geom_settings:
+                    self.set_shading(obj_name, smooth=geom_settings["auto_smooth"])
+                
+                results["steps"]["geometry"] = "success"
+            except Exception as e:
+                results["steps"]["geometry"] = f"error: {str(e)}"
+            
+            # ========== STEP 2: MATERIALS ==========
+            mat_settings = template["materials"]
+            try:
+                # Auto-enhance materials
+                if mat_settings.get("auto_enhance", True):
+                    result = self.auto_enhance_materials(
+                        obj_name, 
+                        aggressive=mat_settings.get("aggressive", False)
+                    )
+                
+                # Apply default material if specified
+                if "default_material" in mat_settings:
+                    self.apply_material_preset(
+                        obj_name,
+                        mat_settings["default_material"]
+                    )
+                
+                results["steps"]["materials"] = "success"
+            except Exception as e:
+                results["steps"]["materials"] = f"error: {str(e)}"
+            
+            # ========== STEP 3: LIGHTING ==========
+            light_settings = template["lighting"]
+            try:
+                # Setup HDRI
+                if light_settings.get("hdri"):
+                    self.setup_hdri_lighting(
+                        light_settings["hdri"],
+                        strength=light_settings.get("hdri_strength", 1.0)
+                    )
+                
+                # Apply lighting rig
+                if light_settings.get("lighting_rig"):
+                    self.apply_lighting_rig(
+                        light_settings["lighting_rig"],
+                        target_object=obj_name
+                    )
+                
+                # Add atmosphere
+                if light_settings.get("atmosphere"):
+                    self.add_atmospheric_fog(light_settings["atmosphere"])
+                
+                results["steps"]["lighting"] = "success"
+            except Exception as e:
+                results["steps"]["lighting"] = f"error: {str(e)}"
+            
+            # ========== STEP 4: COMPOSITION ==========
+            comp_settings = template["composition"]
+            try:
+                # Setup camera with composition
+                self.auto_frame_with_composition(
+                    target_object=obj_name,
+                    shot_type=comp_settings.get("shot_type", "medium_shot"),
+                    composition_rule=comp_settings.get("composition_rule", "rule_of_thirds"),
+                    camera_angle=comp_settings.get("camera_angle", "front")
+                )
+                
+                results["steps"]["composition"] = "success"
+            except Exception as e:
+                results["steps"]["composition"] = f"error: {str(e)}"
+            
+            # ========== STEP 5: COLOR GRADING ==========
+            color_settings = template["color_grading"]
+            try:
+                # Apply complete color grade
+                self.apply_color_grade(
+                    color_settings.get("preset", "cinematic_standard")
+                )
+                
+                # Or apply individual settings
+                if "tone_mapping" in color_settings:
+                    self.setup_tone_mapping(
+                        color_settings["tone_mapping"],
+                        exposure=color_settings.get("exposure", 0.0),
+                        gamma=color_settings.get("gamma", 1.0)
+                    )
+                
+                results["steps"]["color_grading"] = "success"
+            except Exception as e:
+                results["steps"]["color_grading"] = f"error: {str(e)}"
+            
+            # ========== STEP 6: RENDER SETTINGS ==========
+            render_settings = template["render"]
+            try:
+                # Apply render preset if available
+                if "preset" in render_settings:
+                    self.configure_render_settings(render_settings["preset"])
+                
+                # Override samples if specified
+                if "samples" in render_settings:
+                    bpy.context.scene.cycles.samples = render_settings["samples"]
+                
+                results["steps"]["render_settings"] = "success"
+            except Exception as e:
+                results["steps"]["render_settings"] = f"error: {str(e)}"
+            
+            # ========== OPTIONAL: AUTO RENDER ==========
+            if auto_render:
+                try:
+                    bpy.ops.render.render(write_still=False)
+                    results["rendered"] = True
+                except Exception as e:
+                    results["render_error"] = str(e)
+            
+            # Format success message
+            successful_steps = [step for step, status in results["steps"].items() if status == "success"]
+            failed_steps = [step for step, status in results["steps"].items() if status != "success"]
+            
+            message = f"Scene template '{template['name']}' applied successfully!\n"
+            message += f"✓ Completed steps: {', '.join(successful_steps)}\n"
+            if failed_steps:
+                message += f"⚠ Failed steps: {', '.join(failed_steps)}\n"
+            
+            results["message"] = message
+            return results
+            
+        except Exception as e:
+            return {"error": f"Scene template application failed: {str(e)}"}
 
     def search_polyhaven_assets(self, asset_type=None, categories=None):
         """Search for assets from Polyhaven with optional filtering"""

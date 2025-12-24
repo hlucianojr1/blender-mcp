@@ -49,6 +49,15 @@ from .composition import (
     get_framing_guide_data,
     calculate_camera_position as calc_composition_camera
 )
+# Import scene templates system
+from .scene_templates import (
+    SCENE_TEMPLATES,
+    get_template_categories,
+    get_templates_by_category,
+    suggest_template,
+    get_template_info,
+    customize_template
+)
 # Import color grading system
 from .color_grading import (
     LUT_PRESETS,
@@ -2574,10 +2583,308 @@ def list_color_presets(
         return f"Error: {str(e)}"
 
 
+# ==================== SCENE TEMPLATES TOOLS ====================
+# Complete pre-configured professional scene setups combining all enhancement systems
+
+@mcp.tool()
+@telemetry_tool
+async def apply_scene_template(
+    ctx: Context,
+    template_key: str,
+    target_object: str = None,
+    auto_render: bool = False
+) -> str:
+    """
+    Apply a complete professional scene template combining all enhancement systems.
+    
+    This is the FASTEST way to transform a basic scene into production quality.
+    One command applies geometry enhancement, materials, lighting, composition, and color grading.
+    
+    Parameters:
+    - template_key: Template to apply (e.g., "product_studio_pro", "portrait_cinematic")
+    - target_object: Object to enhance (None = auto-detect main object)
+    - auto_render: Automatically render after applying template
+    
+    Available templates by category:
+    - Product: product_studio_pro, product_lifestyle, product_hero_dramatic
+    - Portrait: portrait_professional, portrait_cinematic, portrait_noir
+    - Landscape: landscape_epic, landscape_classic, landscape_moody
+    - Architecture: architecture_hero, architecture_technical, architecture_dramatic
+    
+    Each template includes:
+    1. Geometry enhancement (subdivision, beveling, smooth shading)
+    2. Material setup (PBR materials with appropriate settings)
+    3. Lighting configuration (HDRI + lighting rigs + atmosphere)
+    4. Composition setup (camera framing + shot type + rules)
+    5. Color grading (tone mapping + exposure + look)
+    6. Render settings (samples, resolution, quality)
+    
+    Example:
+        await apply_scene_template(ctx, "product_studio_pro", "my_product")
+        # Transforms basic model into professional product shot in seconds
+    
+    Use suggest_scene_template() first to get AI recommendations.
+    Use list_scene_templates() to browse all available templates.
+    """
+    try:
+        if template_key not in SCENE_TEMPLATES:
+            available = ", ".join(SCENE_TEMPLATES.keys())
+            return f"Error: Template '{template_key}' not found. Available: {available}"
+        
+        template = SCENE_TEMPLATES[template_key]
+        
+        # Send complete template application command
+        command = {
+            "command": "apply_scene_template",
+            "template_key": template_key,
+            "target_object": target_object,
+            "auto_render": auto_render,
+            "template": template
+        }
+        
+        response = await send_blender_command(command)
+        return response.get("message", "Scene template applied successfully")
+        
+    except Exception as e:
+        logger.error(f"Error applying scene template: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def list_scene_templates(
+    ctx: Context,
+    category: str = "all"
+) -> str:
+    """
+    List all available scene templates with descriptions.
+    
+    Browse professional scene setups organized by category.
+    
+    Parameters:
+    - category: Filter by category (all, product, portrait, landscape, architecture)
+    
+    Returns detailed information about each template including:
+    - Name and description
+    - What it's ideal for (use cases)
+    - Settings summary (geometry, materials, lighting, composition, color)
+    
+    Example:
+        await list_scene_templates(ctx, "product")
+        # Shows all product photography templates
+    """
+    try:
+        response = ""
+        
+        if category == "all":
+            categories = get_template_categories()
+            for cat in categories:
+                templates = get_templates_by_category(cat)
+                response += f"\n=== {cat.upper()} TEMPLATES ===\n\n"
+                for key, template in templates.items():
+                    response += f"{key}:\n"
+                    response += f"  Name: {template['name']}\n"
+                    response += f"  Description: {template['description']}\n"
+                    response += f"  Ideal for: {', '.join(template['ideal_for'])}\n"
+                    response += f"  Geometry: {template['geometry']['enhancement_preset']}\n"
+                    response += f"  Lighting: {template['lighting']['hdri']} + {template['lighting']['lighting_rig']}\n"
+                    response += f"  Color: {template['color_grading']['preset']}\n\n"
+        else:
+            templates = get_templates_by_category(category)
+            if not templates:
+                return f"No templates found in category '{category}'. Use 'all' or: product, portrait, landscape, architecture"
+            
+            response += f"\n=== {category.upper()} TEMPLATES ===\n\n"
+            for key, template in templates.items():
+                response += f"{key}:\n"
+                response += f"  Name: {template['name']}\n"
+                response += f"  Description: {template['description']}\n"
+                response += f"  Ideal for: {', '.join(template['ideal_for'])}\n"
+                info = get_template_info(key)
+                response += f"  Settings:\n"
+                response += f"    Geometry: {info['settings']['geometry']['enhancement_preset']}, {info['settings']['geometry']['subdivision_levels']} subdiv levels\n"
+                response += f"    Materials: Auto-enhance={info['settings']['materials']['auto_enhance']}\n"
+                response += f"    Lighting: {info['settings']['lighting']['hdri']} HDRI + {info['settings']['lighting']['lighting_rig']} rig\n"
+                response += f"    Composition: {info['settings']['composition']['shot_type']}, {info['settings']['composition']['composition_rule']}\n"
+                response += f"    Color: {info['settings']['color_grading']['preset']} ({info['settings']['color_grading']['tone_mapping']})\n"
+                response += f"    Render: {info['settings']['render']['samples']} samples\n\n"
+        
+        return response.strip()
+    except Exception as e:
+        logger.error(f"Error listing scene templates: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def suggest_scene_template(
+    ctx: Context,
+    scene_description: str,
+    object_type: str = None,
+    style: str = None
+) -> str:
+    """
+    Get AI-powered scene template recommendation based on your description.
+    
+    Analyzes your scene description and suggests the best template match.
+    
+    Parameters:
+    - scene_description: Describe what you want to create
+    - object_type: Type of subject (optional: product, character, building, environment)
+    - style: Desired style (optional: professional, dramatic, cinematic, clean, etc.)
+    
+    Returns recommended template with explanation of why it's appropriate.
+    
+    Examples:
+        suggest_scene_template(ctx, "professional product photo for e-commerce")
+        # Returns: product_studio_pro (clean white background, balanced lighting)
+        
+        suggest_scene_template(ctx, "dramatic architectural night shot")
+        # Returns: architecture_dramatic (night lighting, dramatic atmosphere)
+        
+        suggest_scene_template(ctx, "cinematic character portrait with moody lighting")
+        # Returns: portrait_cinematic (dramatic lighting, filmic color grading)
+    
+    Use this before apply_scene_template() to find the perfect match.
+    """
+    try:
+        # Get suggestion
+        suggested_key = suggest_template(scene_description, object_type, style)
+        
+        if suggested_key not in SCENE_TEMPLATES:
+            return f"Could not find appropriate template for: {scene_description}"
+        
+        template = SCENE_TEMPLATES[suggested_key]
+        info = get_template_info(suggested_key)
+        
+        response = f"RECOMMENDED TEMPLATE: {suggested_key}\n\n"
+        response += f"Name: {template['name']}\n"
+        response += f"Description: {template['description']}\n"
+        response += f"Category: {template['category']}\n"
+        response += f"Ideal for: {', '.join(template['ideal_for'])}\n\n"
+        
+        response += "This template includes:\n"
+        response += f"- Geometry: {info['settings']['geometry']['enhancement_preset']} preset with {info['settings']['geometry']['subdivision_levels']} subdivision levels\n"
+        response += f"- Materials: Auto-enhancement with aggressive={'Yes' if info['settings']['materials']['aggressive'] else 'No'}\n"
+        response += f"- Lighting: {info['settings']['lighting']['hdri']} HDRI + {info['settings']['lighting']['lighting_rig']} lighting rig\n"
+        response += f"- Composition: {info['settings']['composition']['shot_type']} shot with {info['settings']['composition']['composition_rule']}\n"
+        response += f"- Color: {info['settings']['color_grading']['preset']} grade with {info['settings']['color_grading']['tone_mapping']} tone mapping\n"
+        response += f"- Render: {info['settings']['render']['preset']} quality ({info['settings']['render']['samples']} samples)\n\n"
+        
+        response += f"To apply this template:\n"
+        response += f"  await apply_scene_template(ctx, \"{suggested_key}\", \"your_object_name\")\n"
+        
+        return response
+    except Exception as e:
+        logger.error(f"Error suggesting scene template: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def customize_scene_template(
+    ctx: Context,
+    template_key: str,
+    customizations: dict
+) -> str:
+    """
+    Create a customized version of a scene template.
+    
+    Start with a professional template and modify specific settings.
+    
+    Parameters:
+    - template_key: Base template to customize
+    - customizations: Dict of settings to override
+    
+    Customizable settings:
+    - geometry: enhancement_preset, subdivision_levels, auto_smooth, edge_bevel
+    - materials: auto_enhance, aggressive, default_material
+    - lighting: hdri, lighting_rig, atmosphere, hdri_strength
+    - composition: preset, shot_type, composition_rule, camera_angle
+    - color_grading: preset, tone_mapping, exposure, gamma
+    - render: preset, samples
+    
+    Example:
+        customizations = {
+            "lighting": {"hdri": "sunset", "hdri_strength": 1.5},
+            "color_grading": {"exposure": 0.3},
+            "render": {"samples": 512}
+        }
+        await customize_scene_template(ctx, "product_studio_pro", customizations)
+        # Uses product studio template but with sunset lighting and brighter exposure
+    
+    Returns the customized template configuration.
+    """
+    try:
+        custom_template = customize_template(template_key, customizations)
+        
+        if "error" in custom_template:
+            return custom_template["error"]
+        
+        response = f"CUSTOMIZED TEMPLATE: {template_key}\n\n"
+        response += "Base template modified with your customizations:\n\n"
+        
+        for category, settings in customizations.items():
+            response += f"{category.upper()}:\n"
+            for key, value in settings.items():
+                response += f"  {key}: {value}\n"
+            response += "\n"
+        
+        response += "Full customized configuration:\n"
+        response += json.dumps(custom_template, indent=2)
+        
+        return response
+    except Exception as e:
+        logger.error(f"Error customizing scene template: {str(e)}")
+        return f"Error: {str(e)}"
+
+
 @mcp.prompt()
 def asset_creation_strategy() -> str:
     """Defines the preferred strategy for creating assets in Blender"""
-    return """When creating 3D content in Blender, always start by checking if integrations are available:
+    return """When creating 3D content in Blender, you have TWO approaches:
+
+    ═══════════════════════════════════════════════════════════════════════════
+    QUICK START: SCENE TEMPLATES (RECOMMENDED FOR SPEED)
+    ═══════════════════════════════════════════════════════════════════════════
+    
+    For FASTEST results, use professional scene templates that combine ALL enhancement
+    systems (geometry, materials, lighting, composition, color grading) in ONE command:
+    
+    1. Get Recommendation:
+       suggest_scene_template(ctx, "your scene description")
+       Example: "professional product photo" → product_studio_pro
+       
+    2. Apply Complete Template:
+       apply_scene_template(ctx, "template_key", "object_name")
+       This applies ALL enhancements in seconds:
+       ✓ Geometry enhancement (subdivision, beveling, smooth shading)
+       ✓ PBR materials (auto-enhancement with appropriate settings)
+       ✓ Professional lighting (HDRI + lighting rigs + atmosphere)
+       ✓ Camera composition (framing + shot type + composition rules)
+       ✓ Color grading (tone mapping + exposure + cinematic look)
+       ✓ Render settings (quality, samples, resolution)
+    
+    Available Template Categories:
+    - Product Photography: studio, lifestyle, hero dramatic
+    - Portrait Photography: professional, cinematic, noir
+    - Landscape/Environment: epic, classic, moody
+    - Architecture Visualization: hero, technical, dramatic night
+    
+    Use list_scene_templates(ctx, category) to browse all options.
+    Use customize_scene_template() to modify template settings.
+    
+    Scene templates are ideal when:
+    - You want professional results immediately
+    - The scene fits a standard photography style
+    - You're working with common subject types (products, portraits, buildings)
+    - Time is critical and you need production quality fast
+    
+    ═══════════════════════════════════════════════════════════════════════════
+    MANUAL WORKFLOW: STEP-BY-STEP ENHANCEMENT (RECOMMENDED FOR CUSTOM CONTROL)
+    ═══════════════════════════════════════════════════════════════════════════
+    
+    For maximum control and custom scenes, follow the complete enhancement pipeline:
 
     0. Before anything, always check the scene from get_scene_info()
     1. First use the following tools to verify if the following integrations are enabled:
