@@ -77,6 +77,29 @@ Professional cinematic lighting and rendering
 - Auto-setup based on scene description
 - See [LIGHTING_SYSTEM.md](LIGHTING_SYSTEM.md) for details
 
+#### 4. **Animation System** 🆕
+Character animation for third-person games
+- 14 animation presets (idle, walk, run, jump, aim, recoil, death, etc.)
+- Support for Mixamo, Rigify, and generic bone rigs
+- Keyframe insertion with 13 interpolation types
+- NLA track support for animation layering
+- FBX export for Unity, Unreal, and Godot
+- AI-powered animation preset suggestions
+- See [ANIMATION_SYSTEM.md](ANIMATION_SYSTEM.md) for details
+
+**Quick Animation Example:**
+```python
+# Apply preset animation to character
+await apply_animation_preset(ctx, "idle", "Armature")
+
+# Or create custom animation
+await insert_keyframe(ctx, "Armature", "mixamorig:Head", 1, rotation=[0, 0, 0])
+await insert_keyframe(ctx, "Armature", "mixamorig:Head", 30, rotation=[15, 0, 0])
+
+# Export for game engine
+await export_animation_fbx(ctx, "/path/to/anim.fbx", "Armature")
+```
+
 **Quick Enhancement Example:**
 ```python
 # Import AI-generated model

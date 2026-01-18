@@ -245,6 +245,27 @@ class BlenderMCPServer:
             "add_color_effects": self.add_color_effects,
             # Scene templates system handlers (always available)
             "apply_scene_template": self.apply_scene_template,
+            # Animation system handlers (always available)
+            "get_armature_info": self.get_armature_info,
+            "get_armature_bones": self.get_armature_bones,
+            "set_frame_range": self.set_frame_range,
+            "set_current_frame": self.set_current_frame,
+            "get_current_frame": self.get_current_frame,
+            "create_action": self.create_action,
+            "insert_keyframe": self.insert_keyframe,
+            "delete_keyframe": self.delete_keyframe,
+            "apply_animation_preset": self.apply_animation_preset,
+            "set_bone_pose": self.set_bone_pose,
+            "reset_bone_pose": self.reset_bone_pose,
+            "create_nla_track": self.create_nla_track,
+            "push_action_to_nla": self.push_action_to_nla,
+            "play_animation": self.play_animation,
+            "stop_animation": self.stop_animation,
+            "export_animation_fbx": self.export_animation_fbx,
+            "export_animation_gltf": self.export_animation_gltf,
+            "list_actions": self.list_actions,
+            "set_active_action": self.set_active_action,
+            "duplicate_action": self.duplicate_action,
         }
 
         # Add Polyhaven handlers only if enabled
@@ -2457,6 +2478,679 @@ class BlenderMCPServer:
         except Exception as e:
             return {"error": f"Scene template application failed: {str(e)}"}
 
+    # ==================== ANIMATION SYSTEM HANDLERS ====================
+    
+    def get_armature_info(self, armature_name=None):
+        """Get information about armatures in the scene"""
+        try:
+            if armature_name:
+                armature = bpy.data.objects.get(armature_name)
+                if not armature:
+                    return {"error": f"Armature '{armature_name}' not found"}
+                if armature.type != 'ARMATURE':
+                    return {"error": f"Object '{armature_name}' is not an armature"}
+                
+                bones = []
+                for bone in armature.data.bones:
+                    bone_info = {
+                        "name": bone.name,
+                        "parent": bone.parent.name if bone.parent else None,
+                        "children": [child.name for child in bone.children],
+                        "head": [round(x, 4) for x in bone.head_local],
+                        "tail": [round(x, 4) for x in bone.tail_local],
+                    }
+                    bones.append(bone_info)
+                
+                return {
+                    "name": armature.name,
+                    "bone_count": len(armature.data.bones),
+                    "bones": bones,
+                    "active_action": armature.animation_data.action.name if armature.animation_data and armature.animation_data.action else None
+                }
+            else:
+                armatures = [obj for obj in bpy.context.scene.objects if obj.type == 'ARMATURE']
+                return {
+                    "armature_count": len(armatures),
+                    "armatures": [{"name": a.name, "bone_count": len(a.data.bones)} for a in armatures]
+                }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def get_armature_bones(self, armature_name, bone_mapping="mixamo"):
+        """Get list of bones in an armature with mapping validation"""
+        try:
+            armature = bpy.data.objects.get(armature_name)
+            if not armature:
+                return {"error": f"Armature '{armature_name}' not found"}
+            if armature.type != 'ARMATURE':
+                return {"error": f"Object '{armature_name}' is not an armature"}
+            
+            # Standard bone names for different mappings
+            BONE_MAPPINGS = {
+                "mixamo": {
+                    "hips": "mixamorig:Hips",
+                    "spine": "mixamorig:Spine",
+                    "spine1": "mixamorig:Spine1",
+                    "spine2": "mixamorig:Spine2",
+                    "neck": "mixamorig:Neck",
+                    "head": "mixamorig:Head",
+                    "left_shoulder": "mixamorig:LeftShoulder",
+                    "left_arm": "mixamorig:LeftArm",
+                    "left_forearm": "mixamorig:LeftForeArm",
+                    "left_hand": "mixamorig:LeftHand",
+                    "right_shoulder": "mixamorig:RightShoulder",
+                    "right_arm": "mixamorig:RightArm",
+                    "right_forearm": "mixamorig:RightForeArm",
+                    "right_hand": "mixamorig:RightHand",
+                    "left_upleg": "mixamorig:LeftUpLeg",
+                    "left_leg": "mixamorig:LeftLeg",
+                    "left_foot": "mixamorig:LeftFoot",
+                    "right_upleg": "mixamorig:RightUpLeg",
+                    "right_leg": "mixamorig:RightLeg",
+                    "right_foot": "mixamorig:RightFoot",
+                },
+                "rigify": {
+                    "hips": "spine",
+                    "spine": "spine.001",
+                    "spine1": "spine.002",
+                    "spine2": "spine.003",
+                    "neck": "spine.004",
+                    "head": "spine.006",
+                    "left_shoulder": "shoulder.L",
+                    "left_arm": "upper_arm.L",
+                    "left_forearm": "forearm.L",
+                    "left_hand": "hand.L",
+                    "right_shoulder": "shoulder.R",
+                    "right_arm": "upper_arm.R",
+                    "right_forearm": "forearm.R",
+                    "right_hand": "hand.R",
+                    "left_upleg": "thigh.L",
+                    "left_leg": "shin.L",
+                    "left_foot": "foot.L",
+                    "right_upleg": "thigh.R",
+                    "right_leg": "shin.R",
+                    "right_foot": "foot.R",
+                },
+                "generic": {
+                    "hips": "Hips",
+                    "spine": "Spine",
+                    "spine1": "Spine1",
+                    "spine2": "Spine2",
+                    "neck": "Neck",
+                    "head": "Head",
+                    "left_shoulder": "LeftShoulder",
+                    "left_arm": "LeftArm",
+                    "left_forearm": "LeftForeArm",
+                    "left_hand": "LeftHand",
+                    "right_shoulder": "RightShoulder",
+                    "right_arm": "RightArm",
+                    "right_forearm": "RightForeArm",
+                    "right_hand": "RightHand",
+                    "left_upleg": "LeftUpLeg",
+                    "left_leg": "LeftLeg",
+                    "left_foot": "LeftFoot",
+                    "right_upleg": "RightUpLeg",
+                    "right_leg": "RightLeg",
+                    "right_foot": "RightFoot",
+                }
+            }
+            
+            mapping = BONE_MAPPINGS.get(bone_mapping, BONE_MAPPINGS["mixamo"])
+            bone_names = [bone.name for bone in armature.data.bones]
+            
+            found = {}
+            missing = []
+            
+            for standard_name, mapped_name in mapping.items():
+                if mapped_name in bone_names:
+                    found[standard_name] = mapped_name
+                else:
+                    missing.append(standard_name)
+            
+            return {
+                "armature": armature_name,
+                "total_bones": len(bone_names),
+                "bone_names": bone_names,
+                "bone_mapping": bone_mapping,
+                "mapped_bones": found,
+                "missing_bones": missing,
+                "mapping_coverage": f"{len(found)}/{len(mapping)}"
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def set_frame_range(self, start_frame, end_frame):
+        """Set the animation frame range"""
+        try:
+            bpy.context.scene.frame_start = start_frame
+            bpy.context.scene.frame_end = end_frame
+            return {"message": f"Frame range set to {start_frame} - {end_frame}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def set_current_frame(self, frame):
+        """Set the current frame"""
+        try:
+            bpy.context.scene.frame_set(frame)
+            return {"message": f"Current frame set to {frame}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def get_current_frame(self):
+        """Get the current frame"""
+        try:
+            return {
+                "current_frame": bpy.context.scene.frame_current,
+                "frame_start": bpy.context.scene.frame_start,
+                "frame_end": bpy.context.scene.frame_end,
+                "fps": bpy.context.scene.render.fps
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def create_action(self, action_name, armature_name):
+        """Create a new action for an armature"""
+        try:
+            armature = bpy.data.objects.get(armature_name)
+            if not armature:
+                return {"error": f"Armature '{armature_name}' not found"}
+            if armature.type != 'ARMATURE':
+                return {"error": f"Object '{armature_name}' is not an armature"}
+            
+            # Create action
+            action = bpy.data.actions.new(name=action_name)
+            
+            # Ensure armature has animation data
+            if not armature.animation_data:
+                armature.animation_data_create()
+            
+            # Assign action
+            armature.animation_data.action = action
+            
+            return {"message": f"Action '{action_name}' created and assigned to '{armature_name}'"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def insert_keyframe(self, armature_name, bone_name, frame, rotation=None, location=None, scale=None, interpolation="BEZIER"):
+        """Insert a keyframe for a bone"""
+        try:
+            import math
+            
+            armature = bpy.data.objects.get(armature_name)
+            if not armature:
+                return {"error": f"Armature '{armature_name}' not found"}
+            if armature.type != 'ARMATURE':
+                return {"error": f"Object '{armature_name}' is not an armature"}
+            
+            # Enter pose mode
+            bpy.context.view_layer.objects.active = armature
+            bpy.ops.object.mode_set(mode='POSE')
+            
+            pose_bone = armature.pose.bones.get(bone_name)
+            if not pose_bone:
+                bpy.ops.object.mode_set(mode='OBJECT')
+                return {"error": f"Bone '{bone_name}' not found in armature"}
+            
+            bpy.context.scene.frame_set(frame)
+            
+            keyframed = []
+            
+            if rotation is not None:
+                pose_bone.rotation_mode = 'XYZ'
+                pose_bone.rotation_euler = [math.radians(r) for r in rotation]
+                pose_bone.keyframe_insert(data_path="rotation_euler", frame=frame)
+                keyframed.append("rotation")
+                
+                # Set interpolation
+                if armature.animation_data and armature.animation_data.action:
+                    for fcurve in armature.animation_data.action.fcurves:
+                        if bone_name in fcurve.data_path and "rotation" in fcurve.data_path:
+                            for kf in fcurve.keyframe_points:
+                                if abs(kf.co[0] - frame) < 0.5:
+                                    kf.interpolation = interpolation
+            
+            if location is not None:
+                pose_bone.location = location
+                pose_bone.keyframe_insert(data_path="location", frame=frame)
+                keyframed.append("location")
+                
+                if armature.animation_data and armature.animation_data.action:
+                    for fcurve in armature.animation_data.action.fcurves:
+                        if bone_name in fcurve.data_path and "location" in fcurve.data_path:
+                            for kf in fcurve.keyframe_points:
+                                if abs(kf.co[0] - frame) < 0.5:
+                                    kf.interpolation = interpolation
+            
+            if scale is not None:
+                pose_bone.scale = scale
+                pose_bone.keyframe_insert(data_path="scale", frame=frame)
+                keyframed.append("scale")
+            
+            bpy.ops.object.mode_set(mode='OBJECT')
+            
+            return {"message": f"Keyframe inserted at frame {frame} for bone '{bone_name}': {', '.join(keyframed)}"}
+        except Exception as e:
+            try:
+                bpy.ops.object.mode_set(mode='OBJECT')
+            except:
+                pass
+            return {"error": str(e)}
+
+    def delete_keyframe(self, armature_name, bone_name, frame):
+        """Delete a keyframe for a bone"""
+        try:
+            armature = bpy.data.objects.get(armature_name)
+            if not armature:
+                return {"error": f"Armature '{armature_name}' not found"}
+            if not armature.animation_data or not armature.animation_data.action:
+                return {"error": "No action on armature"}
+            
+            action = armature.animation_data.action
+            deleted = 0
+            
+            for fcurve in action.fcurves:
+                if bone_name in fcurve.data_path:
+                    for i, kf in enumerate(fcurve.keyframe_points):
+                        if abs(kf.co[0] - frame) < 0.5:
+                            fcurve.keyframe_points.remove(fcurve.keyframe_points[i])
+                            deleted += 1
+                            break
+            
+            return {"message": f"Deleted {deleted} keyframes at frame {frame} for bone '{bone_name}'"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def apply_animation_preset(self, preset_name, armature_name, start_frame=1, bone_mapping="mixamo", 
+                               action_name=None, duration=60, loop=False, keyframes=None):
+        """Apply an animation preset to an armature"""
+        try:
+            import math
+            
+            armature = bpy.data.objects.get(armature_name)
+            if not armature:
+                return {"error": f"Armature '{armature_name}' not found"}
+            if armature.type != 'ARMATURE':
+                return {"error": f"Object '{armature_name}' is not an armature"}
+            
+            if not keyframes:
+                return {"error": "No keyframe data provided"}
+            
+            # Create action
+            final_action_name = action_name or f"{preset_name}_action"
+            action = bpy.data.actions.new(name=final_action_name)
+            
+            # Ensure armature has animation data
+            if not armature.animation_data:
+                armature.animation_data_create()
+            
+            armature.animation_data.action = action
+            
+            # Enter pose mode
+            bpy.context.view_layer.objects.active = armature
+            bpy.ops.object.mode_set(mode='POSE')
+            
+            keyframed_bones = 0
+            
+            for bone_name, bone_keyframes in keyframes.items():
+                pose_bone = armature.pose.bones.get(bone_name)
+                if not pose_bone:
+                    continue
+                
+                keyframed_bones += 1
+                pose_bone.rotation_mode = 'XYZ'
+                
+                for kf in bone_keyframes:
+                    frame = start_frame + kf.get("frame", 0)
+                    bpy.context.scene.frame_set(frame)
+                    
+                    if "rotation" in kf:
+                        rot = kf["rotation"]
+                        pose_bone.rotation_euler = [math.radians(r) for r in rot]
+                        pose_bone.keyframe_insert(data_path="rotation_euler", frame=frame)
+                    
+                    if "location" in kf:
+                        pose_bone.location = kf["location"]
+                        pose_bone.keyframe_insert(data_path="location", frame=frame)
+                    
+                    if "scale" in kf:
+                        pose_bone.scale = kf["scale"]
+                        pose_bone.keyframe_insert(data_path="scale", frame=frame)
+                    
+                    # Set interpolation
+                    interp = kf.get("interpolation", "BEZIER")
+                    for fcurve in action.fcurves:
+                        if bone_name in fcurve.data_path:
+                            for keyframe in fcurve.keyframe_points:
+                                if abs(keyframe.co[0] - frame) < 0.5:
+                                    keyframe.interpolation = interp
+            
+            bpy.ops.object.mode_set(mode='OBJECT')
+            
+            # Set frame range
+            end_frame = start_frame + duration - 1
+            bpy.context.scene.frame_start = start_frame
+            bpy.context.scene.frame_end = end_frame
+            bpy.context.scene.frame_set(start_frame)
+            
+            return {
+                "message": f"Animation preset '{preset_name}' applied to '{armature_name}'",
+                "action_name": final_action_name,
+                "keyframed_bones": keyframed_bones,
+                "frame_range": f"{start_frame} - {end_frame}",
+                "loop": loop
+            }
+        except Exception as e:
+            try:
+                bpy.ops.object.mode_set(mode='OBJECT')
+            except:
+                pass
+            return {"error": str(e)}
+
+    def set_bone_pose(self, armature_name, bone_name, rotation=None, location=None, scale=None):
+        """Set the pose of a bone without keyframing"""
+        try:
+            import math
+            
+            armature = bpy.data.objects.get(armature_name)
+            if not armature:
+                return {"error": f"Armature '{armature_name}' not found"}
+            if armature.type != 'ARMATURE':
+                return {"error": f"Object '{armature_name}' is not an armature"}
+            
+            bpy.context.view_layer.objects.active = armature
+            bpy.ops.object.mode_set(mode='POSE')
+            
+            pose_bone = armature.pose.bones.get(bone_name)
+            if not pose_bone:
+                bpy.ops.object.mode_set(mode='OBJECT')
+                return {"error": f"Bone '{bone_name}' not found"}
+            
+            changes = []
+            if rotation is not None:
+                pose_bone.rotation_mode = 'XYZ'
+                pose_bone.rotation_euler = [math.radians(r) for r in rotation]
+                changes.append("rotation")
+            
+            if location is not None:
+                pose_bone.location = location
+                changes.append("location")
+            
+            if scale is not None:
+                pose_bone.scale = scale
+                changes.append("scale")
+            
+            bpy.ops.object.mode_set(mode='OBJECT')
+            
+            return {"message": f"Bone '{bone_name}' pose updated: {', '.join(changes)}"}
+        except Exception as e:
+            try:
+                bpy.ops.object.mode_set(mode='OBJECT')
+            except:
+                pass
+            return {"error": str(e)}
+
+    def reset_bone_pose(self, armature_name, bone_name=None):
+        """Reset bone(s) to rest pose"""
+        try:
+            armature = bpy.data.objects.get(armature_name)
+            if not armature:
+                return {"error": f"Armature '{armature_name}' not found"}
+            if armature.type != 'ARMATURE':
+                return {"error": f"Object '{armature_name}' is not an armature"}
+            
+            bpy.context.view_layer.objects.active = armature
+            bpy.ops.object.mode_set(mode='POSE')
+            
+            if bone_name:
+                pose_bone = armature.pose.bones.get(bone_name)
+                if not pose_bone:
+                    bpy.ops.object.mode_set(mode='OBJECT')
+                    return {"error": f"Bone '{bone_name}' not found"}
+                
+                pose_bone.location = (0, 0, 0)
+                pose_bone.rotation_quaternion = (1, 0, 0, 0)
+                pose_bone.rotation_euler = (0, 0, 0)
+                pose_bone.scale = (1, 1, 1)
+                message = f"Bone '{bone_name}' reset to rest pose"
+            else:
+                for pose_bone in armature.pose.bones:
+                    pose_bone.location = (0, 0, 0)
+                    pose_bone.rotation_quaternion = (1, 0, 0, 0)
+                    pose_bone.rotation_euler = (0, 0, 0)
+                    pose_bone.scale = (1, 1, 1)
+                message = f"All bones reset to rest pose"
+            
+            bpy.ops.object.mode_set(mode='OBJECT')
+            return {"message": message}
+        except Exception as e:
+            try:
+                bpy.ops.object.mode_set(mode='OBJECT')
+            except:
+                pass
+            return {"error": str(e)}
+
+    def create_nla_track(self, armature_name, track_name):
+        """Create a new NLA track"""
+        try:
+            armature = bpy.data.objects.get(armature_name)
+            if not armature:
+                return {"error": f"Armature '{armature_name}' not found"}
+            
+            if not armature.animation_data:
+                armature.animation_data_create()
+            
+            track = armature.animation_data.nla_tracks.new()
+            track.name = track_name
+            
+            return {"message": f"NLA track '{track_name}' created on '{armature_name}'"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def push_action_to_nla(self, armature_name, action_name, track_name=None, start_frame=1):
+        """Push an action to an NLA track"""
+        try:
+            armature = bpy.data.objects.get(armature_name)
+            if not armature:
+                return {"error": f"Armature '{armature_name}' not found"}
+            
+            action = bpy.data.actions.get(action_name)
+            if not action:
+                return {"error": f"Action '{action_name}' not found"}
+            
+            if not armature.animation_data:
+                armature.animation_data_create()
+            
+            # Get or create track
+            if track_name:
+                track = None
+                for t in armature.animation_data.nla_tracks:
+                    if t.name == track_name:
+                        track = t
+                        break
+                if not track:
+                    track = armature.animation_data.nla_tracks.new()
+                    track.name = track_name
+            else:
+                track = armature.animation_data.nla_tracks.new()
+                track.name = f"{action_name}_track"
+            
+            # Create strip
+            strip = track.strips.new(action_name, start_frame, action)
+            
+            return {
+                "message": f"Action '{action_name}' pushed to NLA track '{track.name}'",
+                "strip_name": strip.name,
+                "start_frame": start_frame,
+                "end_frame": int(strip.frame_end)
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def play_animation(self, start_frame=None, end_frame=None, loop=False):
+        """Play animation in viewport"""
+        try:
+            if start_frame is not None:
+                bpy.context.scene.frame_start = start_frame
+            if end_frame is not None:
+                bpy.context.scene.frame_end = end_frame
+            
+            bpy.context.scene.frame_set(bpy.context.scene.frame_start)
+            bpy.ops.screen.animation_play()
+            
+            return {
+                "message": "Animation playing",
+                "frame_range": f"{bpy.context.scene.frame_start} - {bpy.context.scene.frame_end}"
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def stop_animation(self):
+        """Stop animation playback"""
+        try:
+            bpy.ops.screen.animation_cancel()
+            return {"message": "Animation stopped"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def export_animation_fbx(self, filepath, armature_name, action_name=None, include_mesh=True):
+        """Export animation to FBX"""
+        try:
+            armature = bpy.data.objects.get(armature_name)
+            if not armature:
+                return {"error": f"Armature '{armature_name}' not found"}
+            
+            # Set action if specified
+            if action_name:
+                action = bpy.data.actions.get(action_name)
+                if not action:
+                    return {"error": f"Action '{action_name}' not found"}
+                if armature.animation_data:
+                    armature.animation_data.action = action
+            
+            # Select armature and optionally mesh children
+            bpy.ops.object.select_all(action='DESELECT')
+            armature.select_set(True)
+            
+            if include_mesh:
+                for child in armature.children:
+                    if child.type == 'MESH':
+                        child.select_set(True)
+            
+            bpy.context.view_layer.objects.active = armature
+            
+            # Export
+            bpy.ops.export_scene.fbx(
+                filepath=filepath,
+                use_selection=True,
+                bake_anim=True,
+                bake_anim_use_all_actions=False if action_name else True,
+                bake_anim_force_startend_keying=True,
+                add_leaf_bones=False,
+                path_mode='AUTO'
+            )
+            
+            return {"message": f"Animation exported to '{filepath}'"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def export_animation_gltf(self, filepath, armature_name, action_name=None, include_mesh=True, export_format="GLB"):
+        """Export animation to glTF/GLB format"""
+        try:
+            armature = bpy.data.objects.get(armature_name)
+            if not armature:
+                return {"error": f"Armature '{armature_name}' not found"}
+            
+            # Set action if specified
+            if action_name:
+                action = bpy.data.actions.get(action_name)
+                if not action:
+                    return {"error": f"Action '{action_name}' not found"}
+                if armature.animation_data:
+                    armature.animation_data.action = action
+            
+            # Select armature and optionally mesh children
+            bpy.ops.object.select_all(action='DESELECT')
+            armature.select_set(True)
+            
+            if include_mesh:
+                for child in armature.children:
+                    if child.type == 'MESH':
+                        child.select_set(True)
+            
+            bpy.context.view_layer.objects.active = armature
+            
+            # Determine export format
+            export_fmt = export_format.upper()
+            if export_fmt not in ["GLB", "GLTF_SEPARATE", "GLTF_EMBEDDED"]:
+                export_fmt = "GLB"
+            
+            # Export
+            bpy.ops.export_scene.gltf(
+                filepath=filepath,
+                use_selection=True,
+                export_format=export_fmt,
+                export_animations=True,
+                export_animation_mode='ACTIONS' if action_name else 'ACTIVE_ACTIONS',
+                export_nla_strips=False if action_name else True,
+                export_skins=True,
+                export_morph=True,
+                export_apply=False
+            )
+            
+            return {"message": f"Animation exported to '{filepath}' (format: {export_fmt})"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def list_actions(self, armature_name=None):
+        """List all actions"""
+        try:
+            actions = []
+            for action in bpy.data.actions:
+                action_info = {
+                    "name": action.name,
+                    "frame_range": [int(action.frame_range[0]), int(action.frame_range[1])],
+                    "fcurve_count": len(action.fcurves)
+                }
+                actions.append(action_info)
+            
+            return {"action_count": len(actions), "actions": actions}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def set_active_action(self, armature_name, action_name):
+        """Set the active action for an armature"""
+        try:
+            armature = bpy.data.objects.get(armature_name)
+            if not armature:
+                return {"error": f"Armature '{armature_name}' not found"}
+            
+            action = bpy.data.actions.get(action_name)
+            if not action:
+                return {"error": f"Action '{action_name}' not found"}
+            
+            if not armature.animation_data:
+                armature.animation_data_create()
+            
+            armature.animation_data.action = action
+            
+            return {"message": f"Action '{action_name}' set as active on '{armature_name}'"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def duplicate_action(self, source_action, new_name):
+        """Duplicate an action"""
+        try:
+            action = bpy.data.actions.get(source_action)
+            if not action:
+                return {"error": f"Action '{source_action}' not found"}
+            
+            new_action = action.copy()
+            new_action.name = new_name
+            
+            return {"message": f"Action '{source_action}' duplicated as '{new_action.name}'"}
+        except Exception as e:
+            return {"error": str(e)}
+
     def search_polyhaven_assets(self, asset_type=None, categories=None):
         """Search for assets from Polyhaven with optional filtering"""
         try:
@@ -4333,7 +5027,7 @@ def register():
         name="Sketchfab API Key",
         subtype="PASSWORD",
         description="API Key provided by Sketchfab",
-        default=""
+        default=os.environ.get("SKETCHFAB_API_KEY", "")
     )
 
     bpy.utils.register_class(BLENDERMCP_PT_Panel)

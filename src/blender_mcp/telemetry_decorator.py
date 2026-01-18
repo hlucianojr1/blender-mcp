@@ -6,7 +6,7 @@ import functools
 import inspect
 import logging
 import time
-from typing import Callable, Any
+from typing import Any
 
 from .telemetry import record_tool_usage
 
@@ -15,9 +15,9 @@ logger = logging.getLogger("blender-mcp-telemetry")
 
 def telemetry_tool(tool_name: str):
     """Decorator to add telemetry tracking to MCP tools"""
-    def decorator(func: Callable) -> Callable:
+    def decorator(func):
         @functools.wraps(func)
-        def sync_wrapper(*args, **kwargs) -> Any:
+        def sync_wrapper(*args, **kwargs):
             start_time = time.time()
             success = False
             error = None
@@ -37,7 +37,7 @@ def telemetry_tool(tool_name: str):
                     logger.debug(f"Failed to record telemetry: {log_error}")
 
         @functools.wraps(func)
-        async def async_wrapper(*args, **kwargs) -> Any:
+        async def async_wrapper(*args, **kwargs):
             start_time = time.time()
             success = False
             error = None

@@ -26,9 +26,9 @@ Last Updated: December 23, 2025
 
 Blender MCP is a Model Context Protocol server that connects AI agents to Blender 3D software, enabling programmatic control over 3D modeling, rendering, and enhancement operations.
 
-### Enhancement Systems (6 Total)
+### Enhancement Systems (7 Total)
 
-The server provides **6 professional enhancement systems** that transform basic 3D models into production-quality renders:
+The server provides **7 professional enhancement systems** that transform basic 3D models into production-quality renders:
 
 1. **Scene Templates System** - One-command professional setups (12 templates)
 2. **Material System** - PBR materials and procedural shaders (20+ presets)
@@ -36,6 +36,7 @@ The server provides **6 professional enhancement systems** that transform basic 
 4. **Lighting & Atmosphere** - HDRIs, lighting rigs, atmosphere (25+ presets)
 5. **Composition System** - Camera framing and rules (7 shot types, 6 rules)
 6. **Color Grading System** - Tone mapping and color correction (10 LUTs, 6 tone mappings)
+7. **Animation System** - Character animation for games (14 presets, 3 bone mappings)
 
 ### Key Capabilities
 
@@ -565,6 +566,208 @@ list_color_presets(ctx,
 - `bloom_strong` - Strong bloom
 - `chromatic_aberration` - Lens color fringing
 - `lens_distortion` - Barrel distortion
+
+---
+
+### 7. Animation System
+
+**Purpose:** Character animation for third-person games (locomotion, combat, status effects).
+
+#### Animation Presets (14)
+
+**Locomotion (5):**
+- `idle` - Subtle breathing animation (60 frames, looping)
+- `walk` - Standard walking cycle (30 frames, looping)
+- `run` - Running locomotion (20 frames, looping)
+- `jump` - Jump takeoff and landing (40 frames)
+- `crouch` - Transition to crouch (20 frames)
+
+**Action (2):**
+- `roll` - Combat dodge roll (30 frames)
+- `melee_attack` - Melee swing attack (25 frames)
+
+**Combat (2):**
+- `aim_weapon` - Transition to aiming pose (15 frames)
+- `recoil` - Weapon recoil after shooting (10 frames)
+
+**Status (3):**
+- `limp` - Injured walking animation (40 frames, looping)
+- `death` - Death fall animation (45 frames)
+- `hit_react` - Hit reaction flinch (15 frames)
+
+**Utility (2):**
+- `t_pose` - Standard T-pose (1 frame)
+- `a_pose` - Standard A-pose (1 frame)
+
+#### Bone Mapping Support (3)
+
+- `mixamo` - Standard Mixamo rig (default)
+- `rigify` - Blender Rigify addon
+- `generic` - Simple naming convention
+
+#### Core Functions
+
+```python
+# List presets
+list_animation_presets(ctx,
+    category: str = None          # locomotion, action, combat, status, utility
+) -> str
+
+# Get preset details
+get_animation_preset_info(ctx,
+    preset_name: str              # Preset to inspect
+) -> str
+
+# AI suggestion
+suggest_animation_preset(ctx,
+    action_description: str       # "character walking slowly"
+) -> str
+
+# Apply preset (FASTEST)
+apply_animation_preset(ctx,
+    preset_name: str,             # idle, walk, run, jump, etc.
+    armature_name: str,           # Target armature
+    start_frame: int = 1,
+    bone_mapping: str = None,     # Auto-detected if None
+    action_name: str = None       # Custom name
+) -> str
+
+# Armature inspection
+get_armature_info(ctx,
+    armature_name: str = None     # None = list all
+) -> str
+
+get_armature_bones(ctx,
+    armature_name: str,
+    bone_mapping: str = "mixamo"
+) -> str
+
+# Timeline control
+set_frame_range(ctx, start_frame: int, end_frame: int) -> str
+set_current_frame(ctx, frame: int) -> str
+get_current_frame(ctx) -> str
+
+# Keyframe operations
+insert_keyframe(ctx,
+    armature_name: str,
+    bone_name: str,
+    frame: int,
+    rotation: list = None,        # Euler degrees [X, Y, Z]
+    location: list = None,
+    scale: list = None,
+    interpolation: str = "BEZIER" # CONSTANT, LINEAR, BEZIER, etc.
+) -> str
+
+delete_keyframe(ctx,
+    armature_name: str,
+    bone_name: str,
+    frame: int
+) -> str
+
+# Pose control
+set_bone_pose(ctx,
+    armature_name: str,
+    bone_name: str,
+    rotation: list = None,
+    location: list = None,
+    scale: list = None
+) -> str
+
+reset_bone_pose(ctx,
+    armature_name: str,
+    bone_name: str = None         # None = reset all
+) -> str
+
+# Action management
+create_action(ctx, action_name: str, armature_name: str) -> str
+list_actions(ctx, armature_name: str = None) -> str
+set_active_action(ctx, armature_name: str, action_name: str) -> str
+duplicate_action(ctx, source_action: str, new_name: str) -> str
+
+# NLA (layering)
+create_nla_track(ctx, armature_name: str, track_name: str) -> str
+push_action_to_nla(ctx,
+    armature_name: str,
+    action_name: str,
+    track_name: str = None,
+    start_frame: int = 1
+) -> str
+
+# Playback
+play_animation(ctx, start_frame: int = None, end_frame: int = None, loop: bool = False) -> str
+stop_animation(ctx) -> str
+
+# Export
+export_animation_fbx(ctx,
+    filepath: str,
+    armature_name: str,
+    action_name: str = None,
+    include_mesh: bool = True
+) -> str
+```
+
+#### Interpolation Types (13)
+
+- `CONSTANT` - Instant change
+- `LINEAR` - Linear interpolation
+- `BEZIER` - Smooth curves (default)
+- `SINE`, `QUAD`, `CUBIC`, `QUART`, `QUINT`, `EXPO`, `CIRC` - Easing
+- `BACK` - Overshoot
+- `BOUNCE` - Bounce effect
+- `ELASTIC` - Spring effect
+
+#### Animation Workflow Examples
+
+**Apply Preset (Fastest):**
+```python
+# Get armature info
+get_armature_info(ctx)
+
+# Apply idle animation
+apply_animation_preset(ctx, "idle", "Armature")
+
+# Preview
+play_animation(ctx)
+```
+
+**Create Custom Animation:**
+```python
+# Create action
+create_action(ctx, "head_nod", "Armature")
+
+# Set frame range
+set_frame_range(ctx, 1, 30)
+
+# Add keyframes
+insert_keyframe(ctx, "Armature", "mixamorig:Head", 1, rotation=[0, 0, 0])
+insert_keyframe(ctx, "Armature", "mixamorig:Head", 15, rotation=[15, 0, 0])
+insert_keyframe(ctx, "Armature", "mixamorig:Head", 30, rotation=[0, 0, 0])
+
+# Preview
+play_animation(ctx)
+```
+
+**Layer with NLA:**
+```python
+# Apply base idle
+apply_animation_preset(ctx, "idle", "Armature", action_name="base_idle")
+push_action_to_nla(ctx, "Armature", "base_idle", "base_layer", 1)
+
+# Add aim overlay
+apply_animation_preset(ctx, "aim_weapon", "Armature", action_name="aim_overlay")
+push_action_to_nla(ctx, "Armature", "aim_overlay", "upper_body", 1)
+```
+
+**Export for Game Engine:**
+```python
+# Create animations
+apply_animation_preset(ctx, "idle", "Armature", action_name="idle")
+apply_animation_preset(ctx, "walk", "Armature", action_name="walk")
+apply_animation_preset(ctx, "run", "Armature", action_name="run")
+
+# Export to FBX
+export_animation_fbx(ctx, "/game/assets/character.fbx", "Armature")
+```
 
 ---
 

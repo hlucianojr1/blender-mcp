@@ -68,6 +68,22 @@ from .color_grading import (
     get_color_temperature_offset,
     generate_compositor_nodes
 )
+# Import animation system
+from .animation import (
+    ANIMATION_PRESETS,
+    ANIMATION_CATEGORIES,
+    BONE_MAPPINGS,
+    INTERPOLATION_TYPES,
+    EASING_TYPES,
+    get_preset_info as get_animation_preset_info,
+    list_presets_by_category,
+    get_bone_name,
+    get_all_bone_mappings,
+    suggest_animation,
+    get_keyframe_data_for_blender,
+    validate_armature_bones,
+    get_animation_duration
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO,
@@ -2785,7 +2801,7 @@ async def suggest_scene_template(
 async def customize_scene_template(
     ctx: Context,
     template_key: str,
-    customizations: dict
+    customizations: Dict[str, Any]
 ) -> str:
     """
     Create a customized version of a scene template.
@@ -3229,6 +3245,751 @@ def asset_creation_strategy() -> str:
     - Hyper3D Rodin or Hunyuan3D failed to generate the desired asset
     - The task specifically requires a basic material/color
     """
+
+
+# ==================== ANIMATION TOOLS ====================
+# Character animation for third-person games: locomotion, combat, status effects
+
+@mcp.tool()
+@telemetry_tool
+async def list_animation_presets(
+    ctx: Context,
+    category: str = None
+) -> str:
+    """
+    List all available animation presets for game character animations.
+    
+    Parameters:
+    - category: Filter by category (locomotion, action, combat, status, utility, or None for all)
+    
+    Returns a formatted list of all animation presets with their descriptions,
+    duration, loop settings, and compatible bone mappings.
+    
+    Categories:
+    - locomotion: Movement animations (idle, walk, run, jump, crouch)
+    - action: Action sequences (roll, melee_attack)
+    - combat: Combat animations (aim_weapon, recoil)
+    - status: Character state animations (limp, death, hit_react)
+    - utility: Utility poses (t_pose, a_pose)
+    """
+    try:
+        response = "=== ANIMATION PRESETS FOR GAME CHARACTERS ===\n\n"
+        
+        if category:
+            if category not in ANIMATION_CATEGORIES:
+                return f"Error: Category '{category}' not found. Available: {', '.join(ANIMATION_CATEGORIES.keys())}"
+            presets_to_show = {k: ANIMATION_PRESETS[k] for k in ANIMATION_CATEGORIES.get(category, [])}
+            response += f"Category: {category.upper()}\n\n"
+        else:
+            presets_to_show = ANIMATION_PRESETS
+            
+        for preset_name, preset_data in presets_to_show.items():
+            response += f"{preset_name}:\n"
+            response += f"  Name: {preset_data['name']}\n"
+            response += f"  Description: {preset_data['description']}\n"
+            response += f"  Duration: {preset_data['duration']} frames\n"
+            response += f"  Loop: {preset_data['loop']}\n"
+            response += f"  Bone Mapping: {preset_data['bone_mapping']}\n"
+            if 'tags' in preset_data:
+                response += f"  Tags: {', '.join(preset_data['tags'])}\n"
+            response += "\n"
+        
+        response += f"\nTotal presets: {len(presets_to_show)}\n"
+        response += "\nUse get_animation_preset_info(preset_name) for detailed keyframe data.\n"
+        response += "Use suggest_animation_preset(action_description) for AI recommendations."
+        
+        return response
+    except Exception as e:
+        logger.error(f"Error listing animation presets: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def get_animation_preset_info(
+    ctx: Context,
+    preset_name: str
+) -> str:
+    """
+    Get detailed information about a specific animation preset including keyframe data.
+    
+    Parameters:
+    - preset_name: Name of the animation preset (e.g., "idle", "walk", "jump")
+    
+    Returns detailed preset information including all keyframe data for each bone.
+    """
+    try:
+        if preset_name not in ANIMATION_PRESETS:
+            available = ", ".join(ANIMATION_PRESETS.keys())
+            return f"Error: Preset '{preset_name}' not found. Available: {available}"
+        
+        preset = ANIMATION_PRESETS[preset_name]
+        response = f"=== ANIMATION PRESET: {preset_name.upper()} ===\n\n"
+        response += f"Name: {preset['name']}\n"
+        response += f"Description: {preset['description']}\n"
+        response += f"Duration: {preset['duration']} frames\n"
+        response += f"Loop: {preset['loop']}\n"
+        response += f"Bone Mapping: {preset['bone_mapping']}\n"
+        
+        if 'tags' in preset:
+            response += f"Tags: {', '.join(preset['tags'])}\n"
+        
+        response += f"\n--- Keyframe Data ({len(preset['keyframes'])} bones) ---\n"
+        for bone_name, keyframes in preset['keyframes'].items():
+            response += f"\n{bone_name}:\n"
+            for kf in keyframes:
+                response += f"  Frame {kf['frame']}: "
+                if 'rotation' in kf:
+                    rot = kf['rotation']
+                    response += f"rot=({rot[0]:.1f}, {rot[1]:.1f}, {rot[2]:.1f}) "
+                if 'location' in kf:
+                    loc = kf['location']
+                    response += f"loc=({loc[0]:.2f}, {loc[1]:.2f}, {loc[2]:.2f}) "
+                response += f"[{kf.get('interpolation', 'BEZIER')}]\n"
+        
+        return response
+    except Exception as e:
+        logger.error(f"Error getting animation preset info: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def suggest_animation_preset(
+    ctx: Context,
+    action_description: str
+) -> str:
+    """
+    Get AI-powered animation preset suggestions based on action description.
+    
+    Parameters:
+    - action_description: Description of the animation needed (e.g., "character walking slowly", "player shooting rifle")
+    
+    Returns recommended animation presets that match the description.
+    """
+    try:
+        suggestions = suggest_animation(action_description)
+        
+        if not suggestions:
+            return f"No matching presets found for '{action_description}'. Available presets: {', '.join(ANIMATION_PRESETS.keys())}"
+        
+        response = f"=== ANIMATION SUGGESTIONS for '{action_description}' ===\n\n"
+        
+        for i, (preset_name, score) in enumerate(suggestions, 1):
+            preset = ANIMATION_PRESETS[preset_name]
+            response += f"{i}. {preset_name} (confidence: {score:.0%})\n"
+            response += f"   {preset['description']}\n"
+            response += f"   Duration: {preset['duration']} frames, Loop: {preset['loop']}\n\n"
+        
+        response += "\nUse apply_animation_preset(preset_name, armature_name) to apply."
+        
+        return response
+    except Exception as e:
+        logger.error(f"Error suggesting animation: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def get_armature_info(
+    ctx: Context,
+    armature_name: str = None
+) -> str:
+    """
+    Get information about armatures in the scene.
+    
+    Parameters:
+    - armature_name: Specific armature to get info for (None = list all armatures)
+    
+    Returns armature details including bone count and bone hierarchy.
+    """
+    try:
+        result = blender.send_command("get_armature_info", {
+            "armature_name": armature_name
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error getting armature info: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def get_armature_bones(
+    ctx: Context,
+    armature_name: str,
+    bone_mapping: str = "mixamo"
+) -> str:
+    """
+    Get list of bones in an armature with mapping validation.
+    
+    Parameters:
+    - armature_name: Name of the armature object
+    - bone_mapping: Bone naming convention to validate against (mixamo, rigify, generic)
+    
+    Returns list of bones and which standard bones are present/missing.
+    """
+    try:
+        result = blender.send_command("get_armature_bones", {
+            "armature_name": armature_name,
+            "bone_mapping": bone_mapping
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error getting armature bones: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def set_frame_range(
+    ctx: Context,
+    start_frame: int,
+    end_frame: int
+) -> str:
+    """
+    Set the animation frame range for the scene.
+    
+    Parameters:
+    - start_frame: Start frame of the animation
+    - end_frame: End frame of the animation
+    
+    Returns confirmation of the frame range.
+    """
+    try:
+        result = blender.send_command("set_frame_range", {
+            "start_frame": start_frame,
+            "end_frame": end_frame
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error setting frame range: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def set_current_frame(
+    ctx: Context,
+    frame: int
+) -> str:
+    """
+    Set the current frame in the timeline.
+    
+    Parameters:
+    - frame: Frame number to jump to
+    
+    Returns confirmation of the current frame.
+    """
+    try:
+        result = blender.send_command("set_current_frame", {
+            "frame": frame
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error setting current frame: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def get_current_frame(
+    ctx: Context
+) -> str:
+    """
+    Get the current frame number in the timeline.
+    
+    Returns the current frame number and frame range.
+    """
+    try:
+        result = blender.send_command("get_current_frame", {})
+        return result
+    except Exception as e:
+        logger.error(f"Error getting current frame: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def create_action(
+    ctx: Context,
+    action_name: str,
+    armature_name: str
+) -> str:
+    """
+    Create a new action (animation clip) for an armature.
+    
+    Parameters:
+    - action_name: Name for the new action
+    - armature_name: Name of the armature to assign the action to
+    
+    Returns confirmation of action creation.
+    """
+    try:
+        result = blender.send_command("create_action", {
+            "action_name": action_name,
+            "armature_name": armature_name
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error creating action: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def insert_keyframe(
+    ctx: Context,
+    armature_name: str,
+    bone_name: str,
+    frame: int,
+    rotation: list = None,
+    location: list = None,
+    scale: list = None,
+    interpolation: str = "BEZIER"
+) -> str:
+    """
+    Insert a keyframe for a bone at a specific frame.
+    
+    Parameters:
+    - armature_name: Name of the armature
+    - bone_name: Name of the bone to keyframe
+    - frame: Frame number for the keyframe
+    - rotation: Euler rotation in degrees [X, Y, Z] (optional)
+    - location: Location offset [X, Y, Z] (optional)
+    - scale: Scale [X, Y, Z] (optional)
+    - interpolation: Keyframe interpolation type (CONSTANT, LINEAR, BEZIER, SINE, QUAD, CUBIC, QUART, QUINT, EXPO, CIRC, BACK, BOUNCE, ELASTIC)
+    
+    Returns confirmation of keyframe insertion.
+    """
+    try:
+        result = blender.send_command("insert_keyframe", {
+            "armature_name": armature_name,
+            "bone_name": bone_name,
+            "frame": frame,
+            "rotation": rotation,
+            "location": location,
+            "scale": scale,
+            "interpolation": interpolation
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error inserting keyframe: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def delete_keyframe(
+    ctx: Context,
+    armature_name: str,
+    bone_name: str,
+    frame: int
+) -> str:
+    """
+    Delete a keyframe for a bone at a specific frame.
+    
+    Parameters:
+    - armature_name: Name of the armature
+    - bone_name: Name of the bone
+    - frame: Frame number of the keyframe to delete
+    
+    Returns confirmation of keyframe deletion.
+    """
+    try:
+        result = blender.send_command("delete_keyframe", {
+            "armature_name": armature_name,
+            "bone_name": bone_name,
+            "frame": frame
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error deleting keyframe: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def apply_animation_preset(
+    ctx: Context,
+    preset_name: str,
+    armature_name: str,
+    start_frame: int = 1,
+    bone_mapping: str = None,
+    action_name: str = None
+) -> str:
+    """
+    Apply a predefined animation preset to an armature.
+    
+    This is the FASTEST way to add professional game character animations.
+    One command creates complete keyframed animations for locomotion, combat, etc.
+    
+    Parameters:
+    - preset_name: Animation preset to apply (idle, walk, run, jump, crouch, roll, aim_weapon, recoil, melee_attack, limp, death, hit_react, t_pose, a_pose)
+    - armature_name: Name of the target armature
+    - start_frame: Frame to start the animation (default: 1)
+    - bone_mapping: Bone naming convention (mixamo, rigify, generic - auto-detected if None)
+    - action_name: Custom name for the action (default: preset name)
+    
+    Available presets:
+    - Locomotion: idle, walk, run, jump, crouch
+    - Action: roll, melee_attack
+    - Combat: aim_weapon, recoil
+    - Status: limp, death, hit_react
+    - Utility: t_pose, a_pose
+    
+    Example:
+        await apply_animation_preset(ctx, "idle", "Armature")
+        # Creates a breathing idle animation on the armature
+    
+    Use list_animation_presets() to see all available presets.
+    Use suggest_animation_preset() for AI-powered recommendations.
+    """
+    try:
+        if preset_name not in ANIMATION_PRESETS:
+            available = ", ".join(ANIMATION_PRESETS.keys())
+            return f"Error: Preset '{preset_name}' not found. Available: {available}"
+        
+        preset = ANIMATION_PRESETS[preset_name]
+        actual_action_name = action_name or f"{preset_name}_action"
+        actual_bone_mapping = bone_mapping or preset.get('bone_mapping', 'mixamo')
+        
+        # Get keyframe data formatted for Blender
+        keyframe_data = get_keyframe_data_for_blender(preset_name, actual_bone_mapping)
+        
+        result = blender.send_command("apply_animation_preset", {
+            "preset_name": preset_name,
+            "armature_name": armature_name,
+            "start_frame": start_frame,
+            "bone_mapping": actual_bone_mapping,
+            "action_name": actual_action_name,
+            "duration": preset['duration'],
+            "loop": preset['loop'],
+            "keyframes": keyframe_data
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error applying animation preset: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def set_bone_pose(
+    ctx: Context,
+    armature_name: str,
+    bone_name: str,
+    rotation: list = None,
+    location: list = None,
+    scale: list = None
+) -> str:
+    """
+    Set the pose of a bone without keyframing.
+    
+    Parameters:
+    - armature_name: Name of the armature
+    - bone_name: Name of the bone
+    - rotation: Euler rotation in degrees [X, Y, Z]
+    - location: Location offset [X, Y, Z]
+    - scale: Scale [X, Y, Z]
+    
+    Returns confirmation of pose change.
+    """
+    try:
+        result = blender.send_command("set_bone_pose", {
+            "armature_name": armature_name,
+            "bone_name": bone_name,
+            "rotation": rotation,
+            "location": location,
+            "scale": scale
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error setting bone pose: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def reset_bone_pose(
+    ctx: Context,
+    armature_name: str,
+    bone_name: str = None
+) -> str:
+    """
+    Reset bone(s) to their rest pose.
+    
+    Parameters:
+    - armature_name: Name of the armature
+    - bone_name: Name of specific bone to reset (None = reset all bones)
+    
+    Returns confirmation of pose reset.
+    """
+    try:
+        result = blender.send_command("reset_bone_pose", {
+            "armature_name": armature_name,
+            "bone_name": bone_name
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error resetting bone pose: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def create_nla_track(
+    ctx: Context,
+    armature_name: str,
+    track_name: str
+) -> str:
+    """
+    Create a new NLA (Non-Linear Animation) track for stacking animations.
+    
+    Parameters:
+    - armature_name: Name of the armature
+    - track_name: Name for the new NLA track
+    
+    Returns confirmation of track creation.
+    """
+    try:
+        result = blender.send_command("create_nla_track", {
+            "armature_name": armature_name,
+            "track_name": track_name
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error creating NLA track: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def push_action_to_nla(
+    ctx: Context,
+    armature_name: str,
+    action_name: str,
+    track_name: str = None,
+    start_frame: int = 1
+) -> str:
+    """
+    Push an action to an NLA track as a strip.
+    
+    Parameters:
+    - armature_name: Name of the armature
+    - action_name: Name of the action to push
+    - track_name: NLA track to add to (None = create new track)
+    - start_frame: Frame where the strip starts
+    
+    Returns confirmation of NLA strip creation.
+    """
+    try:
+        result = blender.send_command("push_action_to_nla", {
+            "armature_name": armature_name,
+            "action_name": action_name,
+            "track_name": track_name,
+            "start_frame": start_frame
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error pushing action to NLA: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def play_animation(
+    ctx: Context,
+    start_frame: int = None,
+    end_frame: int = None,
+    loop: bool = False
+) -> str:
+    """
+    Play animation in the viewport.
+    
+    Parameters:
+    - start_frame: Start frame (None = use scene start)
+    - end_frame: End frame (None = use scene end)
+    - loop: Whether to loop the animation
+    
+    Returns confirmation that animation is playing.
+    """
+    try:
+        result = blender.send_command("play_animation", {
+            "start_frame": start_frame,
+            "end_frame": end_frame,
+            "loop": loop
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error playing animation: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def stop_animation(
+    ctx: Context
+) -> str:
+    """
+    Stop animation playback.
+    
+    Returns confirmation that animation stopped.
+    """
+    try:
+        result = blender.send_command("stop_animation", {})
+        return result
+    except Exception as e:
+        logger.error(f"Error stopping animation: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def export_animation_fbx(
+    ctx: Context,
+    filepath: str,
+    armature_name: str,
+    action_name: str = None,
+    include_mesh: bool = True
+) -> str:
+    """
+    Export animation to FBX format for game engines (Unity, Unreal, Godot).
+    
+    Parameters:
+    - filepath: Output file path (should end in .fbx)
+    - armature_name: Name of the armature to export
+    - action_name: Specific action to export (None = export current action)
+    - include_mesh: Include mesh with skeleton (True) or skeleton only (False)
+    
+    Returns confirmation of export with file path.
+    """
+    try:
+        result = blender.send_command("export_animation_fbx", {
+            "filepath": filepath,
+            "armature_name": armature_name,
+            "action_name": action_name,
+            "include_mesh": include_mesh
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error exporting animation FBX: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def export_animation_gltf(
+    ctx: Context,
+    filepath: str,
+    armature_name: str,
+    action_name: str = None,
+    include_mesh: bool = True,
+    export_format: str = "GLB"
+) -> str:
+    """
+    Export animation to glTF/GLB format for web and game engines (Three.js, Babylon.js, Godot, Unity).
+    
+    Parameters:
+    - filepath: Output file path (should end in .glb or .gltf)
+    - armature_name: Name of the armature to export
+    - action_name: Specific action to export (None = export current action)
+    - include_mesh: Include mesh with skeleton (True) or skeleton only (False)
+    - export_format: GLB (binary, single file) or GLTF (separate files)
+    
+    Returns confirmation of export with file path.
+    """
+    try:
+        result = blender.send_command("export_animation_gltf", {
+            "filepath": filepath,
+            "armature_name": armature_name,
+            "action_name": action_name,
+            "include_mesh": include_mesh,
+            "export_format": export_format
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error exporting animation glTF: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def list_actions(
+    ctx: Context,
+    armature_name: str = None
+) -> str:
+    """
+    List all actions (animation clips) in the scene.
+    
+    Parameters:
+    - armature_name: Filter by armature (None = list all actions)
+    
+    Returns list of actions with their frame ranges.
+    """
+    try:
+        result = blender.send_command("list_actions", {
+            "armature_name": armature_name
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error listing actions: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def set_active_action(
+    ctx: Context,
+    armature_name: str,
+    action_name: str
+) -> str:
+    """
+    Set the active action for an armature.
+    
+    Parameters:
+    - armature_name: Name of the armature
+    - action_name: Name of the action to make active
+    
+    Returns confirmation of action assignment.
+    """
+    try:
+        result = blender.send_command("set_active_action", {
+            "armature_name": armature_name,
+            "action_name": action_name
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error setting active action: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def duplicate_action(
+    ctx: Context,
+    source_action: str,
+    new_name: str
+) -> str:
+    """
+    Duplicate an existing action with a new name.
+    
+    Parameters:
+    - source_action: Name of the action to duplicate
+    - new_name: Name for the new action
+    
+    Returns confirmation of action duplication.
+    """
+    try:
+        result = blender.send_command("duplicate_action", {
+            "source_action": source_action,
+            "new_name": new_name
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error duplicating action: {str(e)}")
+        return f"Error: {str(e)}"
+
 
 # Main execution
 
