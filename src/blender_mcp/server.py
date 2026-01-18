@@ -1970,6 +1970,332 @@ def download_sketchfab_model(
         logger.error(traceback.format_exc())
         return f"Error downloading Sketchfab model: {str(e)}"
 
+
+# ============== BlenderKit Integration ==============
+
+@mcp.tool()
+def get_blenderkit_status(ctx: Context) -> str:
+    """
+    Check if BlenderKit integration is enabled and the BlenderKit addon is installed.
+    Returns status information about BlenderKit availability and any active downloads.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_blenderkit_status")
+        enabled = result.get("enabled", False)
+        authenticated = result.get("authenticated", False)
+        native = result.get("native_available", False)
+        active_downloads = result.get("active_downloads", 0)
+        message = result.get("message", "")
+        
+        if enabled:
+            message += "\n\nBlenderKit provides access to thousands of high-quality assets:"
+            message += "\n- Models (3D objects, characters, vehicles, furniture)"
+            message += "\n- Materials (PBR textures, procedural materials)"
+            message += "\n- HDRIs (environment lighting)"
+            message += "\n- Brushes (sculpting brushes)"
+            message += "\n- Scenes (complete scene setups)"
+            
+            if native:
+                message += "\n\n✓ Native BlenderKit download system available"
+            
+            if not authenticated:
+                message += "\n\n⚠️ Not logged in - only free assets available"
+            
+            if active_downloads > 0:
+                message += f"\n\n📥 {active_downloads} download(s) in progress"
+        
+        return message
+    except Exception as e:
+        logger.error(f"Error checking BlenderKit status: {str(e)}")
+        return f"Error checking BlenderKit status: {str(e)}"
+
+
+@telemetry_tool("search_blenderkit_assets")
+@mcp.tool()
+def search_blenderkit_assets(
+    ctx: Context,
+    query: str,
+    asset_type: str = "model",
+    category: str = None,
+    free_only: bool = True,
+    count: int = 20
+) -> str:
+    """
+    Search BlenderKit for assets with optional filtering.
+    Includes automatic retry with exponential backoff for rate limits.
+    
+    Parameters:
+    - query: Text to search for (e.g., "chair", "wood texture", "sunset hdri")
+    - asset_type: Type of asset to search for:
+        * "model" - 3D models (default)
+        * "material" - PBR materials and textures
+        * "hdr" - HDRI environment maps
+        * "brush" - Sculpting brushes
+        * "scene" - Complete scenes
+    - category: Optional category filter (use get_blenderkit_categories to see options)
+    - free_only: Only show free assets (default: True for safety)
+    - count: Maximum results to return (default: 20)
+    
+    Returns a formatted list of matching assets with IDs for downloading.
+    """
+    try:
+        blender = get_blender_connection()
+        logger.info(f"Searching BlenderKit: query='{query}', type={asset_type}")
+        
+        result = blender.send_command("search_blenderkit_assets", {
+            "query": query,
+            "asset_type": asset_type,
+            "category": category,
+            "free_only": free_only,
+            "count": count
+        })
+        
+        if "error" in result:
+            logger.error(f"BlenderKit search error: {result['error']}")
+            return f"Error: {result['error']}"
+        
+        results = result.get("results", [])
+        total = result.get("total", 0)
+        
+        if not results:
+            return f"No {asset_type}s found matching '{query}'" + (" (free only)" if free_only else "")
+        
+        output = f"Found {len(results)} of {total} {asset_type}s matching '{query}':\n\n"
+        
+        for asset in results:
+            size_mb = asset.get("file_size", 0) / (1024 * 1024)
+            size_str = f"{size_mb:.1f}MB" if size_mb > 0 else "Unknown size"
+            
+            output += f"📦 **{asset.get('name', 'Unnamed')}**\n"
+            output += f"   ID: `{asset.get('asset_base_id', asset.get('id'))}`\n"
+            output += f"   Author: {asset.get('author', 'Unknown')}\n"
+            output += f"   Free: {'✓ Yes' if asset.get('is_free') else '✗ No (requires login)'}\n"
+            output += f"   Size: {size_str}\n"
+            
+            rating = asset.get('rating', 0)
+            if rating > 0:
+                output += f"   Rating: {'⭐' * int(rating)} ({rating:.1f})\n"
+            
+            output += f"   Downloads: {asset.get('downloads', 0):,}\n"
+            
+            if asset_type == "model" and asset.get("face_count"):
+                output += f"   Faces: {asset.get('face_count')}\n"
+            elif asset_type == "material" and asset.get("texture_resolution"):
+                output += f"   Max Resolution: {asset.get('texture_resolution')}\n"
+            
+            output += "\n"
+        
+        output += "Use `download_blenderkit_asset` with the asset ID to import.\n"
+        output += "Large files (>10MB) download in background - use `poll_blenderkit_download` to check status."
+        
+        return output
+    except Exception as e:
+        logger.error(f"Error searching BlenderKit: {str(e)}")
+        return f"Error searching BlenderKit: {str(e)}"
+
+
+@mcp.tool()
+def get_blenderkit_categories(
+    ctx: Context,
+    asset_type: str = "model"
+) -> str:
+    """
+    Get available categories for a BlenderKit asset type.
+    
+    Parameters:
+    - asset_type: Type of asset ("model", "material", "hdr", "brush", "scene")
+    
+    Returns hierarchical list of categories for filtering searches.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_blenderkit_categories", {
+            "asset_type": asset_type
+        })
+        
+        if "error" in result:
+            return f"Error: {result['error']}"
+        
+        categories = result.get("categories", [])
+        
+        if not categories:
+            return f"No categories found for {asset_type}"
+        
+        output = f"BlenderKit categories for {asset_type}:\n\n"
+        
+        for cat in categories:
+            path = cat.get('path', cat.get('name'))
+            depth = path.count('/')
+            indent = "  " * depth
+            name = cat.get('name')
+            slug = cat.get('slug')
+            output += f"{indent}• {name} (`{slug}`)\n"
+        
+        output += f"\nUse the slug value as the `category` parameter in search_blenderkit_assets."
+        
+        return output
+    except Exception as e:
+        logger.error(f"Error getting BlenderKit categories: {str(e)}")
+        return f"Error getting BlenderKit categories: {str(e)}"
+
+
+@telemetry_tool("download_blenderkit_asset")
+@mcp.tool()
+def download_blenderkit_asset(
+    ctx: Context,
+    asset_id: str,
+    asset_type: str = "model",
+    name: str = None,
+    location: list[float] = None
+) -> str:
+    """
+    Download and import a BlenderKit asset into the scene.
+    
+    Large files (>10MB) are downloaded in the background. Use poll_blenderkit_download
+    to check progress and automatically import when complete.
+    
+    Parameters:
+    - asset_id: The asset ID from search results (the 'asset_base_id' or 'id' field)
+    - asset_type: Type of asset ("model", "material", "hdr", "brush", "scene")
+    - name: Optional custom name for the imported asset
+    - location: Optional [x, y, z] position for models (default: origin)
+    
+    Returns:
+    - For small files: Immediate confirmation of import
+    - For large files: A download_id to poll for progress
+    
+    Note: Free assets download without login. Paid assets require BlenderKit login.
+    """
+    try:
+        blender = get_blender_connection()
+        logger.info(f"Downloading BlenderKit asset: id={asset_id}, type={asset_type}")
+        
+        result = blender.send_command("download_blenderkit_asset", {
+            "asset_id": asset_id,
+            "asset_type": asset_type,
+            "name": name,
+            "location": location,
+            "background": True
+        })
+        
+        if "error" in result:
+            logger.error(f"BlenderKit download error: {result['error']}")
+            return f"Error: {result['error']}"
+        
+        # Background download started
+        if result.get("status") == "background":
+            download_id = result.get("download_id")
+            asset_name = result.get("asset_name", "asset")
+            return (f"📥 Background download started for '{asset_name}'\n\n"
+                   f"Download ID: `{download_id}`\n\n"
+                   f"{result.get('message', '')}\n\n"
+                   f"Use `poll_blenderkit_download(download_id='{download_id}')` to check progress.")
+        
+        # Immediate success
+        if result.get("success"):
+            imported = result.get("imported", [])
+            imported_str = "\n".join([f"  • {i}" for i in imported]) if imported else "  (none)"
+            return (f"✓ {result.get('message', 'Successfully imported asset')}\n\n"
+                   f"Imported:\n{imported_str}")
+        
+        return f"Download failed: {result.get('message', 'Unknown error')}"
+            
+    except Exception as e:
+        logger.error(f"Error downloading BlenderKit asset: {str(e)}")
+        return f"Error downloading BlenderKit asset: {str(e)}"
+
+
+@mcp.tool()
+def poll_blenderkit_download(
+    ctx: Context,
+    download_id: str = None
+) -> str:
+    """
+    Check the status of background BlenderKit downloads.
+    
+    When a download completes, this automatically imports the asset into Blender.
+    
+    Parameters:
+    - download_id: Specific download to check (from download_blenderkit_asset).
+                   If not provided, shows all active downloads.
+    
+    Returns current download status, progress percentage, or import confirmation.
+    """
+    try:
+        blender = get_blender_connection()
+        
+        result = blender.send_command("poll_blenderkit_download", {
+            "download_id": download_id
+        })
+        
+        if "error" in result:
+            return f"Error: {result['error']}"
+        
+        # Single download status
+        if download_id:
+            status = result.get("status")
+            progress = result.get("progress", 0)
+            asset_name = result.get("asset_name", "asset")
+            
+            if status == "completed":
+                imported = result.get("imported", [])
+                imported_str = "\n".join([f"  • {i}" for i in imported]) if imported else "  (none)"
+                return f"✓ Download complete! '{asset_name}' imported successfully.\n\nImported:\n{imported_str}"
+            
+            elif status == "error":
+                return f"✗ Download failed: {result.get('error', 'Unknown error')}"
+            
+            elif status == "downloading":
+                downloaded = result.get("downloaded", 0)
+                total = result.get("total_size", 0)
+                if total > 0:
+                    return (f"📥 Downloading '{asset_name}'...\n\n"
+                           f"Progress: {progress}% ({downloaded/(1024*1024):.1f}MB / {total/(1024*1024):.1f}MB)")
+                return f"📥 Downloading '{asset_name}'... {progress}%"
+            
+            elif status == "ready":
+                return f"✓ Download complete, importing '{asset_name}'..."
+            
+            else:
+                return f"Status: {status} ({progress}%)"
+        
+        # All downloads
+        else:
+            active = result.get("active_downloads", [])
+            completed = result.get("completed", [])
+            
+            output = ""
+            
+            if completed:
+                output += "**Completed Downloads:**\n"
+                for c in completed:
+                    imported = c.get("imported", [])
+                    output += f"✓ Imported: {', '.join(imported)}\n"
+                output += "\n"
+            
+            if active:
+                output += "**Active Downloads:**\n"
+                for d in active:
+                    status = d.get("status")
+                    progress = d.get("progress", 0)
+                    name = d.get("asset_name", "Unknown")
+                    
+                    if status == "error":
+                        output += f"✗ {name}: Error - {d.get('error', 'Unknown')}\n"
+                    else:
+                        output += f"📥 {name}: {progress}% ({status})\n"
+            else:
+                if not completed:
+                    output = "No active downloads."
+            
+            return output
+            
+    except Exception as e:
+        logger.error(f"Error polling BlenderKit download: {str(e)}")
+        return f"Error polling BlenderKit download: {str(e)}"
+
+
 def _process_bbox(original_bbox: list[float] | list[int] | None) -> list[int] | None:
     if original_bbox is None:
         return None

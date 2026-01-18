@@ -309,6 +309,17 @@ class BlenderMCPServer:
             }
             handlers.update(hunyuan_handlers)
 
+        # Add BlenderKit handlers only if enabled
+        if bpy.context.scene.blendermcp_use_blenderkit:
+            blenderkit_handlers = {
+                "get_blenderkit_status": self.get_blenderkit_status,
+                "search_blenderkit_assets": self.search_blenderkit_assets,
+                "get_blenderkit_categories": self.get_blenderkit_categories,
+                "download_blenderkit_asset": self.download_blenderkit_asset,
+                "poll_blenderkit_download": self.poll_blenderkit_download,
+            }
+            handlers.update(blenderkit_handlers)
+
         handler = handlers.get(cmd_type)
         if handler:
             try:
@@ -5152,6 +5163,652 @@ class BlenderMCPServer:
                 print(f"Failed to clean up temporary directory {temp_dir}: {e}")
     #endregion
 
+    # ============== BlenderKit Integration ==============
+    #region BlenderKit
+    
+    # Store for tracking background downloads
+    _blenderkit_downloads = {}
+    
+    def _blenderkit_api_request(self, url, params=None, headers=None, max_retries=5, timeout=30):
+        """
+        Make a BlenderKit API request with exponential backoff retry logic.
+        Handles rate limits (429) and transient errors with automatic retries.
+        """
+        import random
+        
+        if headers is None:
+            headers = {"accept": "application/json"}
+        
+        # Try to add auth header from BlenderKit preferences
+        try:
+            if "blenderkit" in bpy.context.preferences.addons:
+                user_prefs = bpy.context.preferences.addons['blenderkit'].preferences
+                api_key = getattr(user_prefs, 'api_key', '')
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+        except:
+            pass
+        
+        last_exception = None
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(url, params=params, headers=headers, timeout=timeout)
+                
+                # Success
+                if response.status_code == 200:
+                    return {"success": True, "data": response.json()}
+                
+                # Rate limited - use Retry-After header if available
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get('Retry-After', 0))
+                    if retry_after == 0:
+                        # Exponential backoff: 1s, 2s, 4s, 8s, 16s + jitter
+                        retry_after = (2 ** attempt) + random.uniform(0, 1)
+                    
+                    print(f"BlenderKit rate limited. Retrying in {retry_after:.1f}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(retry_after)
+                    continue
+                
+                # Server errors - retry with backoff
+                if response.status_code >= 500:
+                    wait_time = (2 ** attempt) + random.uniform(0, 1)
+                    print(f"BlenderKit server error {response.status_code}. Retrying in {wait_time:.1f}s")
+                    time.sleep(wait_time)
+                    continue
+                
+                # Client errors - don't retry
+                return {
+                    "success": False, 
+                    "error": f"API returned status {response.status_code}",
+                    "status_code": response.status_code
+                }
+                
+            except requests.exceptions.Timeout:
+                last_exception = "Request timed out"
+                wait_time = (2 ** attempt) + random.uniform(0, 1)
+                print(f"BlenderKit timeout. Retrying in {wait_time:.1f}s")
+                time.sleep(wait_time)
+                
+            except requests.exceptions.ConnectionError as e:
+                last_exception = f"Connection error: {str(e)}"
+                wait_time = (2 ** attempt) + random.uniform(0, 1)
+                print(f"BlenderKit connection error. Retrying in {wait_time:.1f}s")
+                time.sleep(wait_time)
+                
+            except Exception as e:
+                last_exception = str(e)
+                break
+        
+        return {"success": False, "error": last_exception or "Max retries exceeded"}
+
+    def get_blenderkit_status(self):
+        """Check BlenderKit integration status"""
+        enabled = bpy.context.scene.blendermcp_use_blenderkit
+        
+        if not enabled:
+            return {
+                "enabled": False,
+                "message": "BlenderKit integration is disabled. Enable it in the BlenderMCP panel."
+            }
+        
+        # Check if BlenderKit addon is installed and enabled
+        if "blenderkit" not in bpy.context.preferences.addons:
+            return {
+                "enabled": False,
+                "native_available": False,
+                "message": "BlenderKit addon is not installed or enabled. Install it from blenderkit.com and enable in Blender preferences."
+            }
+        
+        # Try to import BlenderKit modules
+        try:
+            from blenderkit import utils, paths
+            
+            # Check for native download support
+            native_download = False
+            try:
+                from blenderkit import download
+                native_download = True
+            except:
+                pass
+            
+            # Check authentication status
+            user_preferences = bpy.context.preferences.addons['blenderkit'].preferences
+            api_key = getattr(user_preferences, 'api_key', '')
+            
+            # Check for active downloads
+            active_downloads = len([d for d in self._blenderkit_downloads.values() 
+                                   if d.get("status") == "downloading"])
+            
+            if not api_key:
+                return {
+                    "enabled": True,
+                    "authenticated": False,
+                    "native_available": native_download,
+                    "active_downloads": active_downloads,
+                    "message": "BlenderKit addon is installed but not logged in. Log in via BlenderKit addon panel for full access. Free assets are still available."
+                }
+            
+            return {
+                "enabled": True,
+                "authenticated": True,
+                "native_available": native_download,
+                "active_downloads": active_downloads,
+                "message": "BlenderKit is ready. Access to models, materials, HDRIs, brushes, and scenes."
+            }
+        except ImportError as e:
+            return {
+                "enabled": False,
+                "native_available": False,
+                "message": f"BlenderKit addon import failed: {str(e)}"
+            }
+        except Exception as e:
+            return {
+                "enabled": False,
+                "message": f"Error checking BlenderKit status: {str(e)}"
+            }
+
+    def search_blenderkit_assets(self, query, asset_type="model", category=None, 
+                                  free_only=True, count=20):
+        """Search BlenderKit for assets with retry logic"""
+        try:
+            # Check if BlenderKit is available
+            if "blenderkit" not in bpy.context.preferences.addons:
+                return {"error": "BlenderKit addon is not installed or enabled"}
+            
+            # BlenderKit API endpoint
+            api_url = "https://www.blenderkit.com/api/v1/search/"
+            
+            # Build search parameters
+            params = {
+                "query": query,
+                "asset_type": asset_type,
+                "page_size": count,
+                "dict_parameters": 1,
+            }
+            
+            if category:
+                params["category_subtree"] = category
+            
+            if free_only:
+                params["is_free"] = True
+            
+            # Make request with retry logic
+            result = self._blenderkit_api_request(api_url, params=params)
+            
+            if not result["success"]:
+                return {"error": result.get("error", "API request failed")}
+            
+            data = result["data"]
+            
+            # Process results
+            results = data.get("results", [])
+            processed = []
+            
+            for asset in results[:count]:
+                asset_info = {
+                    "id": asset.get("id"),
+                    "asset_base_id": asset.get("assetBaseId", asset.get("id")),
+                    "name": asset.get("name", "Unnamed"),
+                    "asset_type": asset.get("assetType", asset_type),
+                    "author": asset.get("author", {}).get("fullName", "Unknown"),
+                    "is_free": asset.get("isFree", False),
+                    "description": asset.get("description", "")[:200],
+                    "rating": asset.get("averageRating", 0),
+                    "downloads": asset.get("downloadsCount", 0),
+                    "thumbnail": asset.get("thumbnailMiddleUrl", ""),
+                    "file_size": asset.get("filesSize", 0),
+                }
+                
+                # Add type-specific info
+                if asset_type == "model":
+                    asset_info["face_count"] = asset.get("faceCount", "Unknown")
+                elif asset_type == "material":
+                    asset_info["texture_resolution"] = asset.get("textureResolutionMax", "Unknown")
+                
+                processed.append(asset_info)
+            
+            return {
+                "count": len(processed),
+                "total": data.get("count", 0),
+                "results": processed
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    def get_blenderkit_categories(self, asset_type="model"):
+        """Get BlenderKit categories for an asset type with retry logic"""
+        try:
+            if "blenderkit" not in bpy.context.preferences.addons:
+                return {"error": "BlenderKit addon is not installed or enabled"}
+            
+            # BlenderKit categories endpoint
+            api_url = f"https://www.blenderkit.com/api/v1/categories/"
+            params = {"asset_type": asset_type}
+            
+            # Make request with retry logic
+            result = self._blenderkit_api_request(api_url, params=params)
+            
+            if not result["success"]:
+                return {"error": result.get("error", "API request failed")}
+            
+            data = result["data"]
+            
+            # Process categories into a simplified structure
+            def process_categories(cats, prefix=""):
+                cat_result = []
+                for cat in cats:
+                    name = cat.get("name", "")
+                    slug = cat.get("slug", "")
+                    full_path = f"{prefix}/{name}" if prefix else name
+                    cat_result.append({
+                        "name": name,
+                        "slug": slug,
+                        "path": full_path
+                    })
+                    children = cat.get("children", [])
+                    if children:
+                        cat_result.extend(process_categories(children, full_path))
+                return cat_result
+            
+            categories = process_categories(data.get("results", []))
+            
+            return {
+                "asset_type": asset_type,
+                "categories": categories
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _background_download_worker(self, download_id, asset_data, asset_type, name, location):
+        """
+        Background worker for downloading large files.
+        Updates _blenderkit_downloads with progress.
+        """
+        try:
+            self._blenderkit_downloads[download_id]["status"] = "downloading"
+            self._blenderkit_downloads[download_id]["progress"] = 0
+            
+            asset_id = asset_data.get("assetBaseId", asset_data.get("id"))
+            file_size = asset_data.get("filesSize", 0)
+            
+            # Get download URL
+            headers = {"accept": "application/json"}
+            try:
+                user_prefs = bpy.context.preferences.addons['blenderkit'].preferences
+                api_key = getattr(user_prefs, 'api_key', '')
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+            except:
+                pass
+            
+            # Get download URL through download endpoint
+            download_url_endpoint = f"https://www.blenderkit.com/api/v1/assets/{asset_id}/download/"
+            download_result = self._blenderkit_api_request(download_url_endpoint, headers=headers)
+            
+            if not download_result["success"]:
+                self._blenderkit_downloads[download_id]["status"] = "error"
+                self._blenderkit_downloads[download_id]["error"] = "Could not obtain download URL"
+                return
+            
+            download_url = download_result["data"].get("url")
+            
+            if not download_url:
+                self._blenderkit_downloads[download_id]["status"] = "error"
+                self._blenderkit_downloads[download_id]["error"] = "No download URL available"
+                return
+            
+            # Download with progress tracking
+            temp_dir = tempfile.mkdtemp(prefix="blenderkit_")
+            file_name = asset_data.get("name", "asset").replace(" ", "_").replace("/", "_")
+            
+            if asset_type == "hdr":
+                file_path = os.path.join(temp_dir, f"{file_name}.exr")
+            else:
+                file_path = os.path.join(temp_dir, f"{file_name}.blend")
+            
+            self._blenderkit_downloads[download_id]["file_path"] = file_path
+            
+            # Stream download with progress
+            response = requests.get(download_url, stream=True, timeout=300)
+            
+            if response.status_code != 200:
+                self._blenderkit_downloads[download_id]["status"] = "error"
+                self._blenderkit_downloads[download_id]["error"] = f"Download failed: {response.status_code}"
+                return
+            
+            total_size = int(response.headers.get('content-length', file_size or 0))
+            downloaded = 0
+            
+            with open(file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=65536):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            progress = int((downloaded / total_size) * 100)
+                            self._blenderkit_downloads[download_id]["progress"] = progress
+                            self._blenderkit_downloads[download_id]["downloaded"] = downloaded
+                            self._blenderkit_downloads[download_id]["total_size"] = total_size
+            
+            # Mark as ready for import
+            self._blenderkit_downloads[download_id]["status"] = "ready"
+            self._blenderkit_downloads[download_id]["progress"] = 100
+            self._blenderkit_downloads[download_id]["asset_data"] = asset_data
+            self._blenderkit_downloads[download_id]["asset_type"] = asset_type
+            self._blenderkit_downloads[download_id]["name"] = name
+            self._blenderkit_downloads[download_id]["location"] = location
+            
+        except Exception as e:
+            self._blenderkit_downloads[download_id]["status"] = "error"
+            self._blenderkit_downloads[download_id]["error"] = str(e)
+            traceback.print_exc()
+
+    def _import_blenderkit_asset(self, file_path, asset_type, asset_data, name=None, location=None):
+        """Import a downloaded BlenderKit asset into Blender"""
+        imported_objects = []
+        
+        try:
+            if asset_type == "model":
+                # Append objects from blend file
+                with bpy.data.libraries.load(file_path, link=False) as (data_from, data_to):
+                    data_to.objects = data_from.objects
+                    data_to.collections = data_from.collections
+                
+                # Link objects to scene
+                for obj in data_to.objects:
+                    if obj is not None:
+                        if obj.name not in bpy.context.collection.objects:
+                            bpy.context.collection.objects.link(obj)
+                        imported_objects.append(obj.name)
+                        
+                        if location and len(location) >= 3:
+                            obj.location = (location[0], location[1], location[2])
+                        
+                        if name and len(imported_objects) == 1:
+                            obj.name = name
+            
+            elif asset_type == "material":
+                with bpy.data.libraries.load(file_path, link=False) as (data_from, data_to):
+                    data_to.materials = data_from.materials
+                    data_to.node_groups = data_from.node_groups
+                
+                for mat in data_to.materials:
+                    if mat is not None:
+                        if name:
+                            mat.name = name
+                        imported_objects.append(f"Material: {mat.name}")
+            
+            elif asset_type == "hdr":
+                img = bpy.data.images.load(file_path)
+                img.name = name if name else asset_data.get("name", "HDR")
+                
+                world = bpy.context.scene.world
+                if not world:
+                    world = bpy.data.worlds.new("World")
+                    bpy.context.scene.world = world
+                
+                world.use_nodes = True
+                nodes = world.node_tree.nodes
+                links = world.node_tree.links
+                nodes.clear()
+                
+                env_tex = nodes.new('ShaderNodeTexEnvironment')
+                env_tex.image = img
+                env_tex.location = (-300, 300)
+                
+                background = nodes.new('ShaderNodeBackground')
+                background.location = (0, 300)
+                
+                output = nodes.new('ShaderNodeOutputWorld')
+                output.location = (200, 300)
+                
+                links.new(env_tex.outputs['Color'], background.inputs['Color'])
+                links.new(background.outputs['Background'], output.inputs['Surface'])
+                
+                imported_objects.append(f"HDR: {img.name}")
+            
+            elif asset_type == "brush":
+                with bpy.data.libraries.load(file_path, link=False) as (data_from, data_to):
+                    data_to.brushes = data_from.brushes
+                
+                for brush in data_to.brushes:
+                    if brush is not None:
+                        imported_objects.append(f"Brush: {brush.name}")
+            
+            elif asset_type == "scene":
+                with bpy.data.libraries.load(file_path, link=False) as (data_from, data_to):
+                    data_to.scenes = data_from.scenes
+                
+                for scene in data_to.scenes:
+                    if scene is not None:
+                        imported_objects.append(f"Scene: {scene.name}")
+            
+            return {"success": True, "imported": imported_objects}
+            
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def download_blenderkit_asset(self, asset_id, asset_type="model", name=None, 
+                                   location=None, background=True):
+        """
+        Download and import a BlenderKit asset.
+        For large files (>10MB), uses background download with polling.
+        """
+        try:
+            if "blenderkit" not in bpy.context.preferences.addons:
+                return {"error": "BlenderKit addon is not installed or enabled"}
+            
+            # First, get asset info
+            api_url = "https://www.blenderkit.com/api/v1/search/"
+            params = {
+                "asset_base_id": asset_id,
+                "dict_parameters": 1,
+            }
+            
+            result = self._blenderkit_api_request(api_url, params=params)
+            
+            if not result["success"]:
+                return {"error": result.get("error", "Failed to fetch asset info")}
+            
+            data = result["data"]
+            results = data.get("results", [])
+            
+            if not results:
+                return {"error": f"Asset with ID {asset_id} not found"}
+            
+            asset_data = results[0]
+            
+            # Check if asset is free or user has access
+            is_free = asset_data.get("isFree", False)
+            if not is_free:
+                try:
+                    user_prefs = bpy.context.preferences.addons['blenderkit'].preferences
+                    api_key = getattr(user_prefs, 'api_key', '')
+                    if not api_key:
+                        return {"error": "This is a paid asset. Please log in to BlenderKit addon to download."}
+                except:
+                    return {"error": "This is a paid asset. Please log in to BlenderKit addon to download."}
+            
+            # Check file size - use background for files > 10MB
+            file_size = asset_data.get("filesSize", 0)
+            large_file_threshold = 10 * 1024 * 1024
+            
+            # Use background download for large files
+            if background and file_size > large_file_threshold:
+                import uuid
+                download_id = str(uuid.uuid4())[:8]
+                
+                self._blenderkit_downloads[download_id] = {
+                    "status": "starting",
+                    "progress": 0,
+                    "asset_name": asset_data.get("name", "Unknown"),
+                    "asset_type": asset_type,
+                    "file_size": file_size,
+                    "started_at": datetime.now().isoformat()
+                }
+                
+                # Start background download thread
+                download_thread = threading.Thread(
+                    target=self._background_download_worker,
+                    args=(download_id, asset_data, asset_type, name, location),
+                    daemon=True
+                )
+                download_thread.start()
+                
+                return {
+                    "status": "background",
+                    "download_id": download_id,
+                    "message": f"Large file ({file_size / (1024*1024):.1f}MB) - downloading in background. Use poll_blenderkit_download to check status.",
+                    "asset_name": asset_data.get("name")
+                }
+            
+            # Synchronous download for small files
+            download_id = "sync_" + str(hash(asset_id))[:8]
+            self._blenderkit_downloads[download_id] = {
+                "status": "downloading",
+                "progress": 0
+            }
+            
+            # Run download
+            self._background_download_worker(download_id, asset_data, asset_type, name, location)
+            
+            # Check result
+            download_info = self._blenderkit_downloads.get(download_id, {})
+            
+            if download_info.get("status") == "error":
+                error_msg = download_info.get("error", "Download failed")
+                del self._blenderkit_downloads[download_id]
+                return {"error": error_msg}
+            
+            if download_info.get("status") == "ready":
+                # Import the asset
+                file_path = download_info.get("file_path")
+                import_result = self._import_blenderkit_asset(
+                    file_path, asset_type, asset_data, name, location
+                )
+                
+                # Cleanup
+                try:
+                    if file_path:
+                        shutil.rmtree(os.path.dirname(file_path))
+                except:
+                    pass
+                
+                del self._blenderkit_downloads[download_id]
+                
+                if import_result.get("success"):
+                    return {
+                        "success": True,
+                        "message": f"Successfully imported {asset_type} '{asset_data.get('name', 'asset')}'",
+                        "imported": import_result.get("imported", [])
+                    }
+                else:
+                    return {"error": import_result.get("error", "Import failed")}
+            
+            return {"error": "Download did not complete properly"}
+            
+        except Exception as e:
+            traceback.print_exc()
+            return {"error": str(e)}
+
+    def poll_blenderkit_download(self, download_id=None):
+        """
+        Poll the status of background BlenderKit downloads.
+        If download_id is None, returns all active downloads.
+        If a download is ready, automatically imports the asset.
+        """
+        try:
+            if download_id:
+                # Get specific download
+                if download_id not in self._blenderkit_downloads:
+                    return {"error": f"Download ID '{download_id}' not found"}
+                
+                download_info = self._blenderkit_downloads[download_id]
+                status = download_info.get("status")
+                
+                # If ready, import the asset
+                if status == "ready":
+                    file_path = download_info.get("file_path")
+                    asset_type = download_info.get("asset_type")
+                    asset_data = download_info.get("asset_data")
+                    name = download_info.get("name")
+                    location = download_info.get("location")
+                    
+                    import_result = self._import_blenderkit_asset(
+                        file_path, asset_type, asset_data, name, location
+                    )
+                    
+                    # Cleanup
+                    try:
+                        if file_path:
+                            shutil.rmtree(os.path.dirname(file_path))
+                    except:
+                        pass
+                    
+                    del self._blenderkit_downloads[download_id]
+                    
+                    if import_result.get("success"):
+                        return {
+                            "status": "completed",
+                            "message": f"Successfully imported {asset_type}",
+                            "imported": import_result.get("imported", [])
+                        }
+                    else:
+                        return {
+                            "status": "error",
+                            "error": import_result.get("error", "Import failed")
+                        }
+                
+                # Return current status
+                return {
+                    "download_id": download_id,
+                    "status": status,
+                    "progress": download_info.get("progress", 0),
+                    "asset_name": download_info.get("asset_name"),
+                    "downloaded": download_info.get("downloaded", 0),
+                    "total_size": download_info.get("total_size", 0),
+                    "error": download_info.get("error") if status == "error" else None
+                }
+            
+            else:
+                # Return all downloads
+                downloads = []
+                completed = []
+                
+                for did, info in list(self._blenderkit_downloads.items()):
+                    status = info.get("status")
+                    
+                    # Auto-import ready downloads
+                    if status == "ready":
+                        result = self.poll_blenderkit_download(did)
+                        if result.get("status") == "completed":
+                            completed.append({
+                                "download_id": did,
+                                "imported": result.get("imported", [])
+                            })
+                            continue
+                    
+                    downloads.append({
+                        "download_id": did,
+                        "status": status,
+                        "progress": info.get("progress", 0),
+                        "asset_name": info.get("asset_name"),
+                        "error": info.get("error") if status == "error" else None
+                    })
+                
+                return {
+                    "active_downloads": downloads,
+                    "completed": completed
+                }
+                
+        except Exception as e:
+            return {"error": str(e)}
+
+    #endregion
+
 # Blender UI Panel
 class BLENDERMCP_PT_Panel(bpy.types.Panel):
     bl_label = "Blender MCP"
@@ -5189,6 +5846,15 @@ class BLENDERMCP_PT_Panel(bpy.types.Panel):
                 layout.prop(scene, "blendermcp_hunyuan3d_num_inference_steps", text="Number of Inference Steps")
                 layout.prop(scene, "blendermcp_hunyuan3d_guidance_scale", text="Guidance Scale")
                 layout.prop(scene, "blendermcp_hunyuan3d_texture", text="Generate Texture")
+
+        layout.prop(scene, "blendermcp_use_blenderkit", text="Use BlenderKit asset library")
+        if scene.blendermcp_use_blenderkit:
+            if "blenderkit" not in bpy.context.preferences.addons:
+                box = layout.box()
+                box.label(text="BlenderKit addon required", icon='ERROR')
+                box.label(text="Install from blenderkit.com")
+            else:
+                layout.label(text="BlenderKit ready", icon='CHECKMARK')
         
         if not scene.blendermcp_server_running:
             layout.operator("blendermcp.start_server", text="Connect to MCP server")
@@ -5366,6 +6032,12 @@ def register():
         default=os.environ.get("SKETCHFAB_API_KEY", "")
     )
 
+    bpy.types.Scene.blendermcp_use_blenderkit = bpy.props.BoolProperty(
+        name="Use BlenderKit",
+        description="Enable BlenderKit asset library integration (requires BlenderKit addon installed)",
+        default=False
+    )
+
     bpy.utils.register_class(BLENDERMCP_PT_Panel)
     bpy.utils.register_class(BLENDERMCP_OT_SetFreeTrialHyper3DAPIKey)
     bpy.utils.register_class(BLENDERMCP_OT_StartServer)
@@ -5401,6 +6073,7 @@ def unregister():
     del bpy.types.Scene.blendermcp_hunyuan3d_num_inference_steps
     del bpy.types.Scene.blendermcp_hunyuan3d_guidance_scale
     del bpy.types.Scene.blendermcp_hunyuan3d_texture
+    del bpy.types.Scene.blendermcp_use_blenderkit
 
     print("BlenderMCP addon unregistered")
 
