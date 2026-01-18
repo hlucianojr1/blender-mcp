@@ -31,10 +31,9 @@ bl_info = {
 }
 
 # SECURITY WARNING: Do not commit API keys to version control
-# The free trial key has been removed for security reasons.
-# Users should obtain their own API key from hyper3d.ai or fal.ai
-# and enter it in the BlenderMCP addon settings panel.
-RODIN_FREE_TRIAL_KEY = ""  # Removed for security - get your own key from hyper3d.ai
+# API keys are loaded from environment variables.
+# Users can set RODIN_FREE_TRIAL_KEY in their .env file or environment.
+RODIN_FREE_TRIAL_KEY = os.environ.get("RODIN_FREE_TRIAL_KEY", "")
 
 # Add User-Agent as required by Poly Haven API
 REQ_HEADERS = requests.utils.default_headers()
@@ -266,6 +265,12 @@ class BlenderMCPServer:
             "list_actions": self.list_actions,
             "set_active_action": self.set_active_action,
             "duplicate_action": self.duplicate_action,
+            # Export handlers
+            "export_object": self.export_object,
+            "export_material": self.export_material,
+            "import_material": self.import_material,
+            "get_material_data": self.get_material_data,
+            "list_materials": self.list_materials,
         }
 
         # Add Polyhaven handlers only if enabled
@@ -3148,6 +3153,337 @@ class BlenderMCPServer:
             new_action.name = new_name
             
             return {"message": f"Action '{source_action}' duplicated as '{new_action.name}'"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def export_object(self, filepath, object_names=None, export_format="FBX", 
+                     include_materials=True, include_textures=True, apply_modifiers=False):
+        """Export objects/meshes to various formats"""
+        try:
+            # Select objects
+            bpy.ops.object.select_all(action='DESELECT')
+            
+            if object_names:
+                for obj_name in object_names:
+                    obj = bpy.data.objects.get(obj_name)
+                    if obj:
+                        obj.select_set(True)
+                    else:
+                        return {"error": f"Object '{obj_name}' not found"}
+            else:
+                # Use currently selected objects
+                if not bpy.context.selected_objects:
+                    return {"error": "No objects selected"}
+            
+            # Set active object
+            if bpy.context.selected_objects:
+                bpy.context.view_layer.objects.active = bpy.context.selected_objects[0]
+            
+            # Apply modifiers if requested
+            if apply_modifiers:
+                for obj in bpy.context.selected_objects:
+                    if obj.type == 'MESH':
+                        obj.data = obj.data.copy()  # Make unique copy
+                        for modifier in obj.modifiers:
+                            bpy.context.view_layer.objects.active = obj
+                            bpy.ops.object.modifier_apply(modifier=modifier.name)
+            
+            # Export based on format
+            export_format = export_format.upper()
+            
+            if export_format == "FBX":
+                bpy.ops.export_scene.fbx(
+                    filepath=filepath,
+                    use_selection=True,
+                    path_mode='AUTO' if include_textures else 'STRIP',
+                    embed_textures=include_textures
+                )
+            elif export_format == "OBJ":
+                bpy.ops.wm.obj_export(
+                    filepath=filepath,
+                    export_selected_objects=True,
+                    export_materials=include_materials,
+                    path_mode='AUTO' if include_textures else 'STRIP'
+                )
+            elif export_format in ["GLB", "GLTF"]:
+                fmt = "GLB" if export_format == "GLB" else "GLTF_SEPARATE"
+                bpy.ops.export_scene.gltf(
+                    filepath=filepath,
+                    use_selection=True,
+                    export_format=fmt,
+                    export_materials='EXPORT' if include_materials else 'NONE',
+                    export_image_format='AUTO' if include_textures else 'NONE'
+                )
+            elif export_format == "STL":
+                bpy.ops.wm.stl_export(
+                    filepath=filepath,
+                    export_selected_objects=True
+                )
+            elif export_format == "PLY":
+                bpy.ops.wm.ply_export(
+                    filepath=filepath,
+                    export_selected_objects=True
+                )
+            elif export_format == "DAE":
+                bpy.ops.wm.collada_export(
+                    filepath=filepath,
+                    selected=True,
+                    include_material_textures=include_textures
+                )
+            else:
+                return {"error": f"Unsupported export format: {export_format}"}
+            
+            return {"message": f"Objects exported to '{filepath}' (format: {export_format})"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def export_material(self, material_name, filepath, export_format="JSON", 
+                       include_textures=True, pack_textures=False):
+        """Export a material to a file"""
+        try:
+            material = bpy.data.materials.get(material_name)
+            if not material:
+                return {"error": f"Material '{material_name}' not found"}
+            
+            export_format = export_format.upper()
+            
+            if export_format == "JSON":
+                # Export material as JSON
+                material_data = {
+                    "name": material.name,
+                    "use_nodes": material.use_nodes,
+                    "diffuse_color": list(material.diffuse_color),
+                    "metallic": material.metallic,
+                    "roughness": material.roughness,
+                    "nodes": [],
+                    "links": []
+                }
+                
+                # Export node tree if it exists
+                if material.use_nodes and material.node_tree:
+                    for node in material.node_tree.nodes:
+                        node_data = {
+                            "name": node.name,
+                            "type": node.type,
+                            "location": list(node.location),
+                            "inputs": {},
+                            "outputs": {}
+                        }
+                        
+                        # Export input values
+                        for input in node.inputs:
+                            if hasattr(input, 'default_value'):
+                                try:
+                                    val = input.default_value
+                                    if hasattr(val, '__len__'):
+                                        node_data["inputs"][input.name] = list(val)
+                                    else:
+                                        node_data["inputs"][input.name] = val
+                                except:
+                                    pass
+                        
+                        # Export image paths for Image Texture nodes
+                        if node.type == 'TEX_IMAGE' and node.image:
+                            node_data["image_path"] = bpy.path.abspath(node.image.filepath)
+                            if pack_textures and node.image.filepath:
+                                # Copy texture to same directory
+                                import shutil
+                                from pathlib import Path
+                                src = bpy.path.abspath(node.image.filepath)
+                                dst_dir = Path(filepath).parent
+                                dst = dst_dir / Path(src).name
+                                if Path(src).exists():
+                                    shutil.copy2(src, dst)
+                                    node_data["packed_image"] = str(dst.name)
+                        
+                        material_data["nodes"].append(node_data)
+                    
+                    # Export links
+                    for link in material.node_tree.links:
+                        link_data = {
+                            "from_node": link.from_node.name,
+                            "from_socket": link.from_socket.name,
+                            "to_node": link.to_node.name,
+                            "to_socket": link.to_socket.name
+                        }
+                        material_data["links"].append(link_data)
+                
+                # Write JSON file
+                with open(filepath, 'w') as f:
+                    json.dump(material_data, f, indent=2)
+                
+                return {"message": f"Material '{material_name}' exported to '{filepath}'"}
+                
+            elif export_format == "BLEND":
+                # Export as Blender library file
+                # Create a temporary blend file with just this material
+                import tempfile
+                temp_blend = tempfile.mktemp(suffix='.blend')
+                
+                # Save current file
+                bpy.ops.wm.save_mainfile()
+                
+                # Create new file with just the material
+                bpy.ops.wm.read_homefile(use_empty=True)
+                
+                # Create a dummy object to hold the material
+                bpy.ops.mesh.primitive_cube_add()
+                obj = bpy.context.active_object
+                
+                # Append the material from the original file
+                with bpy.data.libraries.load(bpy.data.filepath) as (data_from, data_to):
+                    data_to.materials = [material_name]
+                
+                # Assign to object
+                if data_to.materials:
+                    obj.data.materials.append(data_to.materials[0])
+                
+                # Save as library file
+                bpy.ops.wm.save_as_mainfile(filepath=filepath, copy=True)
+                
+                # Reopen original file
+                bpy.ops.wm.open_mainfile(filepath=bpy.data.filepath)
+                
+                return {"message": f"Material '{material_name}' exported to library file '{filepath}'"}
+            
+            else:
+                return {"error": f"Unsupported export format: {export_format}"}
+                
+        except Exception as e:
+            return {"error": str(e)}
+
+    def import_material(self, filepath, material_name=None):
+        """Import a material from a file"""
+        try:
+            from pathlib import Path
+            filepath_obj = Path(filepath)
+            
+            if not filepath_obj.exists():
+                return {"error": f"File not found: {filepath}"}
+            
+            if filepath_obj.suffix.lower() == '.json':
+                # Import from JSON
+                with open(filepath, 'r') as f:
+                    material_data = json.load(f)
+                
+                mat_name = material_name or material_data.get("name", "ImportedMaterial")
+                
+                # Create material
+                mat = bpy.data.materials.new(name=mat_name)
+                mat.use_nodes = material_data.get("use_nodes", True)
+                
+                if "diffuse_color" in material_data:
+                    mat.diffuse_color = material_data["diffuse_color"]
+                if "metallic" in material_data:
+                    mat.metallic = material_data["metallic"]
+                if "roughness" in material_data:
+                    mat.roughness = material_data["roughness"]
+                
+                # Recreate node tree
+                if mat.use_nodes and "nodes" in material_data:
+                    mat.node_tree.nodes.clear()
+                    
+                    # Create nodes
+                    node_map = {}
+                    for node_data in material_data["nodes"]:
+                        node = mat.node_tree.nodes.new(type=node_data["type"])
+                        node.name = node_data["name"]
+                        node.location = node_data["location"]
+                        node_map[node_data["name"]] = node
+                        
+                        # Set input values
+                        for input_name, value in node_data.get("inputs", {}).items():
+                            if input_name in node.inputs:
+                                try:
+                                    node.inputs[input_name].default_value = value
+                                except:
+                                    pass
+                        
+                        # Load image for Image Texture nodes
+                        if node.type == 'TEX_IMAGE':
+                            img_path = node_data.get("packed_image") or node_data.get("image_path")
+                            if img_path:
+                                # Try relative to JSON file first
+                                full_path = filepath_obj.parent / Path(img_path).name
+                                if full_path.exists():
+                                    node.image = bpy.data.images.load(str(full_path))
+                                elif Path(img_path).exists():
+                                    node.image = bpy.data.images.load(img_path)
+                    
+                    # Create links
+                    for link_data in material_data.get("links", []):
+                        from_node = node_map.get(link_data["from_node"])
+                        to_node = node_map.get(link_data["to_node"])
+                        if from_node and to_node:
+                            from_socket = from_node.outputs.get(link_data["from_socket"])
+                            to_socket = to_node.inputs.get(link_data["to_socket"])
+                            if from_socket and to_socket:
+                                mat.node_tree.links.new(from_socket, to_socket)
+                
+                return {"message": f"Material '{mat_name}' imported from '{filepath}'"}
+                
+            elif filepath_obj.suffix.lower() == '.blend':
+                # Import from Blender library file
+                with bpy.data.libraries.load(filepath) as (data_from, data_to):
+                    if material_name and material_name in data_from.materials:
+                        data_to.materials = [material_name]
+                    elif data_from.materials:
+                        data_to.materials = [data_from.materials[0]]
+                    else:
+                        return {"error": "No materials found in file"}
+                
+                if data_to.materials:
+                    imported_name = data_to.materials[0].name
+                    return {"message": f"Material '{imported_name}' imported from '{filepath}'"}
+                else:
+                    return {"error": "Failed to import material"}
+            
+            else:
+                return {"error": f"Unsupported file format: {filepath_obj.suffix}"}
+                
+        except Exception as e:
+            return {"error": str(e)}
+
+    def get_material_data(self, material_name):
+        """Get detailed material data"""
+        try:
+            material = bpy.data.materials.get(material_name)
+            if not material:
+                return {"error": f"Material '{material_name}' not found"}
+            
+            data = {
+                "name": material.name,
+                "use_nodes": material.use_nodes,
+                "diffuse_color": list(material.diffuse_color),
+                "metallic": material.metallic,
+                "roughness": material.roughness,
+                "node_count": 0,
+                "link_count": 0
+            }
+            
+            if material.use_nodes and material.node_tree:
+                data["node_count"] = len(material.node_tree.nodes)
+                data["link_count"] = len(material.node_tree.links)
+                data["nodes"] = [{"name": n.name, "type": n.type} for n in material.node_tree.nodes]
+            
+            return data
+        except Exception as e:
+            return {"error": str(e)}
+
+    def list_materials(self, object_name=None):
+        """List all materials"""
+        try:
+            materials = []
+            
+            if object_name:
+                obj = bpy.data.objects.get(object_name)
+                if not obj:
+                    return {"error": f"Object '{object_name}' not found"}
+                materials = [slot.material.name for slot in obj.material_slots if slot.material]
+            else:
+                materials = [mat.name for mat in bpy.data.materials]
+            
+            return {"materials": materials, "count": len(materials)}
         except Exception as e:
             return {"error": str(e)}
 

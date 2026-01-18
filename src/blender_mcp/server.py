@@ -3991,6 +3991,163 @@ async def duplicate_action(
         return f"Error: {str(e)}"
 
 
+@mcp.tool()
+@telemetry_tool
+async def export_object(
+    ctx: Context,
+    filepath: str,
+    object_names: list[str] = None,
+    export_format: str = "FBX",
+    include_materials: bool = True,
+    include_textures: bool = True,
+    apply_modifiers: bool = False
+) -> str:
+    """
+    Export objects/meshes to various formats.
+    
+    Parameters:
+    - filepath: Output file path (extension should match format)
+    - object_names: List of object names to export (None = export all selected objects)
+    - export_format: Export format (FBX, OBJ, GLB, GLTF, STL, PLY, DAE)
+    - include_materials: Include materials in export
+    - include_textures: Include textures in export (if format supports it)
+    - apply_modifiers: Apply modifiers before export
+    
+    Returns confirmation of export with file path.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("export_object", {
+            "filepath": filepath,
+            "object_names": object_names,
+            "export_format": export_format.upper(),
+            "include_materials": include_materials,
+            "include_textures": include_textures,
+            "apply_modifiers": apply_modifiers
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error exporting object: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def export_material(
+    ctx: Context,
+    material_name: str,
+    filepath: str,
+    export_format: str = "JSON",
+    include_textures: bool = True,
+    pack_textures: bool = False
+) -> str:
+    """
+    Export a material to a file for reuse or sharing.
+    
+    Parameters:
+    - material_name: Name of the material to export
+    - filepath: Output file path
+    - export_format: Export format (JSON, BLEND)
+      - JSON: Human-readable material settings (useful for documentation and recreation)
+      - BLEND: Blender library file with the material (can be appended/linked in other projects)
+    - include_textures: Include texture file paths in export
+    - pack_textures: Copy textures to same directory as export file (JSON format only)
+    
+    Returns confirmation of export with file details.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("export_material", {
+            "material_name": material_name,
+            "filepath": filepath,
+            "export_format": export_format.upper(),
+            "include_textures": include_textures,
+            "pack_textures": pack_textures
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error exporting material: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def import_material(
+    ctx: Context,
+    filepath: str,
+    material_name: str = None
+) -> str:
+    """
+    Import a material from a file.
+    
+    Parameters:
+    - filepath: Path to material file (JSON or BLEND)
+    - material_name: Name for the imported material (None = use original name)
+    
+    Returns confirmation of import with material name.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("import_material", {
+            "filepath": filepath,
+            "material_name": material_name
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error importing material: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def get_material_data(
+    ctx: Context,
+    material_name: str
+) -> str:
+    """
+    Get detailed material data including all node settings and connections.
+    
+    Parameters:
+    - material_name: Name of the material
+    
+    Returns JSON data with material properties, nodes, and connections.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_material_data", {
+            "material_name": material_name
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error getting material data: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool
+async def list_materials(
+    ctx: Context,
+    object_name: str = None
+) -> str:
+    """
+    List all materials in the scene or on a specific object.
+    
+    Parameters:
+    - object_name: Name of object to list materials from (None = list all scene materials)
+    
+    Returns list of material names.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("list_materials", {
+            "object_name": object_name
+        })
+        return result
+    except Exception as e:
+        logger.error(f"Error listing materials: {str(e)}")
+        return f"Error: {str(e)}"
+
+
 # Main execution
 
 def main():

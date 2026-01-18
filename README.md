@@ -125,6 +125,32 @@ See [QUICK_REFERENCE.md](QUICK_REFERENCE.md) for complete enhancement workflows.
 - **Sketchfab**: Search and download 3D models
 - **Material control**: Apply and modify materials and colors
 
+### Export & Import Features 🆕
+Export your work to various formats and share materials between projects
+- **Object Export**: Export meshes to FBX, OBJ, GLB, GLTF, STL, PLY, DAE formats
+- **Material Export**: Save materials as JSON or Blender library files
+- **Material Import**: Import materials from JSON or BLEND files
+- **Material Management**: List, inspect, and share material data
+- See [EXPORT_FEATURES.md](EXPORT_FEATURES.md) for complete documentation
+
+**Quick Export Example:**
+```python
+# Export model for Unity/Unreal
+export_object(
+    object_names=["Character"],
+    filepath="/game/assets/character.fbx",
+    export_format="FBX",
+    include_materials=True
+)
+
+# Share material between projects
+export_material(
+    material_name="MyMaterial",
+    filepath="/shared/materials/awesome.json",
+    pack_textures=True
+)
+```
+
 ## Components
 
 The system consists of two main components:
