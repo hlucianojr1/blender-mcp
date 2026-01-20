@@ -39,8 +39,63 @@ RODIN_FREE_TRIAL_KEY = os.environ.get("RODIN_FREE_TRIAL_KEY", "")
 REQ_HEADERS = requests.utils.default_headers()
 REQ_HEADERS.update({"User-Agent": "blender-mcp"})
 
+# Cache for BlenderKit detection status
+_blenderkit_cache = {
+    "detected": None,
+    "addon_name": None,
+    "last_check": 0
+}
+
+def detect_blenderkit_addon():
+    """Detect BlenderKit addon across different naming conventions.
+    Returns (is_available, addon_name) tuple.
+    Blender 5.0+ uses extensions with names like 'bl_ext.user_default.blenderkit'
+    while older versions use 'blenderkit' directly.
+    """
+    global _blenderkit_cache
+    
+    # Check cache (valid for 2 seconds)
+    current_time = time.time()
+    if _blenderkit_cache["detected"] is not None and (current_time - _blenderkit_cache["last_check"]) < 2:
+        return _blenderkit_cache["detected"], _blenderkit_cache["addon_name"]
+    
+    addons = bpy.context.preferences.addons
+    
+    # Try different possible names for BlenderKit
+    possible_names = [
+        "blenderkit",  # Traditional addon name
+        "bl_ext.user_default.blenderkit",  # Blender 5.0+ extension (user installed)
+        "bl_ext.blender_org.blenderkit",  # Official extension
+    ]
+    
+    # Also check for any addon containing 'blenderkit' in case of custom installs
+    for addon_name in addons.keys():
+        if "blenderkit" in addon_name.lower():
+            if addon_name not in possible_names:
+                possible_names.append(addon_name)
+    
+    for name in possible_names:
+        if name in addons:
+            _blenderkit_cache["detected"] = True
+            _blenderkit_cache["addon_name"] = name
+            _blenderkit_cache["last_check"] = current_time
+            return True, name
+    
+    _blenderkit_cache["detected"] = False
+    _blenderkit_cache["addon_name"] = None
+    _blenderkit_cache["last_check"] = current_time
+    return False, None
+
+def refresh_blenderkit_detection():
+    """Force refresh BlenderKit detection by clearing cache."""
+    global _blenderkit_cache
+    _blenderkit_cache["detected"] = None
+    _blenderkit_cache["addon_name"] = None
+    _blenderkit_cache["last_check"] = 0
+    return detect_blenderkit_addon()
+
 class BlenderMCPServer:
-    def __init__(self, host='localhost', port=9876):
+    def __init__(self, host='0.0.0.0', port=9876):
         self.host = host
         self.port = port
         self.running = False
@@ -56,6 +111,7 @@ class BlenderMCPServer:
 
         try:
             # Create socket
+            # Bind to 0.0.0.0 to accept connections from anywhere (including Docker)
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.socket.bind((self.host, self.port))
@@ -5181,8 +5237,9 @@ class BlenderMCPServer:
         
         # Try to add auth header from BlenderKit preferences
         try:
-            if "blenderkit" in bpy.context.preferences.addons:
-                user_prefs = bpy.context.preferences.addons['blenderkit'].preferences
+            is_available, addon_name = detect_blenderkit_addon()
+            if is_available and addon_name:
+                user_prefs = bpy.context.preferences.addons[addon_name].preferences
                 api_key = getattr(user_prefs, 'api_key', '')
                 if api_key:
                     headers["Authorization"] = f"Bearer {api_key}"
@@ -5252,29 +5309,57 @@ class BlenderMCPServer:
                 "message": "BlenderKit integration is disabled. Enable it in the BlenderMCP panel."
             }
         
-        # Check if BlenderKit addon is installed and enabled
-        if "blenderkit" not in bpy.context.preferences.addons:
+        # Check if BlenderKit addon is installed and enabled using enhanced detection
+        is_available, addon_name = detect_blenderkit_addon()
+        if not is_available:
             return {
                 "enabled": False,
                 "native_available": False,
                 "message": "BlenderKit addon is not installed or enabled. Install it from blenderkit.com and enable in Blender preferences."
             }
         
-        # Try to import BlenderKit modules
+        # Try to import BlenderKit modules - handle both traditional addon and Blender 5.0+ extensions
         try:
-            from blenderkit import utils, paths
-            
-            # Check for native download support
+            blenderkit_imported = False
             native_download = False
+            
+            # Try traditional import first
             try:
-                from blenderkit import download
-                native_download = True
-            except:
+                from blenderkit import utils, paths
+                blenderkit_imported = True
+                # Check for native download support
+                try:
+                    from blenderkit import download
+                    native_download = True
+                except:
+                    pass
+            except ImportError:
                 pass
             
-            # Check authentication status
-            user_preferences = bpy.context.preferences.addons['blenderkit'].preferences
-            api_key = getattr(user_preferences, 'api_key', '')
+            # If traditional import failed, try extension-style import
+            if not blenderkit_imported and addon_name and "bl_ext" in addon_name:
+                try:
+                    # For Blender 5.0+ extensions, we can't import the module directly
+                    # but we can still check preferences and use the API
+                    blenderkit_imported = True
+                except:
+                    pass
+            
+            # Even if we can't import the module, we can still use the API
+            # Check authentication status using detected addon name
+            try:
+                user_preferences = bpy.context.preferences.addons[addon_name].preferences
+                api_key = getattr(user_preferences, 'api_key', '')
+            except Exception as pref_error:
+                # If we can't access preferences, BlenderKit is installed but may not be fully loaded
+                return {
+                    "enabled": True,
+                    "authenticated": False,
+                    "native_available": False,
+                    "active_downloads": 0,
+                    "addon_name": addon_name,
+                    "message": f"BlenderKit detected ({addon_name}) but preferences not accessible. API access available."
+                }
             
             # Check for active downloads
             active_downloads = len([d for d in self._blenderkit_downloads.values() 
@@ -5286,6 +5371,7 @@ class BlenderMCPServer:
                     "authenticated": False,
                     "native_available": native_download,
                     "active_downloads": active_downloads,
+                    "addon_name": addon_name,
                     "message": "BlenderKit addon is installed but not logged in. Log in via BlenderKit addon panel for full access. Free assets are still available."
                 }
             
@@ -5294,12 +5380,18 @@ class BlenderMCPServer:
                 "authenticated": True,
                 "native_available": native_download,
                 "active_downloads": active_downloads,
+                "addon_name": addon_name,
                 "message": "BlenderKit is ready. Access to models, materials, HDRIs, brushes, and scenes."
             }
-        except ImportError as e:
+        except Exception as e:
+            # Return detailed error for debugging
+            import traceback
+            error_details = traceback.format_exc()
             return {
                 "enabled": False,
                 "native_available": False,
+                "addon_name": addon_name if addon_name else "unknown",
+                "error_details": error_details,
                 "message": f"BlenderKit addon import failed: {str(e)}"
             }
         except Exception as e:
@@ -5312,8 +5404,9 @@ class BlenderMCPServer:
                                   free_only=True, count=20):
         """Search BlenderKit for assets with retry logic"""
         try:
-            # Check if BlenderKit is available
-            if "blenderkit" not in bpy.context.preferences.addons:
+            # Check if BlenderKit is available using enhanced detection
+            is_available, addon_name = detect_blenderkit_addon()
+            if not is_available:
                 return {"error": "BlenderKit addon is not installed or enabled"}
             
             # BlenderKit API endpoint
@@ -5380,7 +5473,8 @@ class BlenderMCPServer:
     def get_blenderkit_categories(self, asset_type="model"):
         """Get BlenderKit categories for an asset type with retry logic"""
         try:
-            if "blenderkit" not in bpy.context.preferences.addons:
+            is_available, addon_name = detect_blenderkit_addon()
+            if not is_available:
                 return {"error": "BlenderKit addon is not installed or enabled"}
             
             # BlenderKit categories endpoint
@@ -5437,10 +5531,12 @@ class BlenderMCPServer:
             # Get download URL
             headers = {"accept": "application/json"}
             try:
-                user_prefs = bpy.context.preferences.addons['blenderkit'].preferences
-                api_key = getattr(user_prefs, 'api_key', '')
-                if api_key:
-                    headers["Authorization"] = f"Bearer {api_key}"
+                is_available, addon_name = detect_blenderkit_addon()
+                if is_available and addon_name:
+                    user_prefs = bpy.context.preferences.addons[addon_name].preferences
+                    api_key = getattr(user_prefs, 'api_key', '')
+                    if api_key:
+                        headers["Authorization"] = f"Bearer {api_key}"
             except:
                 pass
             
@@ -5598,7 +5694,8 @@ class BlenderMCPServer:
         For large files (>10MB), uses background download with polling.
         """
         try:
-            if "blenderkit" not in bpy.context.preferences.addons:
+            is_available, addon_name = detect_blenderkit_addon()
+            if not is_available:
                 return {"error": "BlenderKit addon is not installed or enabled"}
             
             # First, get asset info
@@ -5625,9 +5722,13 @@ class BlenderMCPServer:
             is_free = asset_data.get("isFree", False)
             if not is_free:
                 try:
-                    user_prefs = bpy.context.preferences.addons['blenderkit'].preferences
-                    api_key = getattr(user_prefs, 'api_key', '')
-                    if not api_key:
+                    # addon_name is already set from earlier detection
+                    if addon_name:
+                        user_prefs = bpy.context.preferences.addons[addon_name].preferences
+                        api_key = getattr(user_prefs, 'api_key', '')
+                        if not api_key:
+                            return {"error": "This is a paid asset. Please log in to BlenderKit addon to download."}
+                    else:
                         return {"error": "This is a paid asset. Please log in to BlenderKit addon to download."}
                 except:
                     return {"error": "This is a paid asset. Please log in to BlenderKit addon to download."}
@@ -5849,12 +5950,19 @@ class BLENDERMCP_PT_Panel(bpy.types.Panel):
 
         layout.prop(scene, "blendermcp_use_blenderkit", text="Use BlenderKit asset library")
         if scene.blendermcp_use_blenderkit:
-            if "blenderkit" not in bpy.context.preferences.addons:
+            is_available, addon_name = detect_blenderkit_addon()
+            if not is_available:
                 box = layout.box()
                 box.label(text="BlenderKit addon required", icon='ERROR')
                 box.label(text="Install from blenderkit.com")
+                box.operator("blendermcp.refresh_blenderkit", text="Refresh Detection", icon='FILE_REFRESH')
             else:
-                layout.label(text="BlenderKit ready", icon='CHECKMARK')
+                box = layout.box()
+                box.label(text="BlenderKit ready", icon='CHECKMARK')
+                # Show which addon was detected (helpful for debugging)
+                if addon_name and addon_name != "blenderkit":
+                    box.label(text=f"Detected: {addon_name}", icon='INFO')
+                box.operator("blendermcp.refresh_blenderkit", text="Refresh", icon='FILE_REFRESH')
         
         if not scene.blendermcp_server_running:
             layout.operator("blendermcp.start_server", text="Connect to MCP server")
@@ -5871,6 +5979,26 @@ class BLENDERMCP_OT_SetFreeTrialHyper3DAPIKey(bpy.types.Operator):
         context.scene.blendermcp_hyper3d_api_key = RODIN_FREE_TRIAL_KEY
         context.scene.blendermcp_hyper3d_mode = 'MAIN_SITE'
         self.report({'INFO'}, "API Key set successfully!")
+        return {'FINISHED'}
+
+# Operator to refresh BlenderKit detection
+class BLENDERMCP_OT_RefreshBlenderKit(bpy.types.Operator):
+    bl_idname = "blendermcp.refresh_blenderkit"
+    bl_label = "Refresh BlenderKit Detection"
+    bl_description = "Re-check if BlenderKit addon is installed and enabled"
+
+    def execute(self, context):
+        is_available, addon_name = refresh_blenderkit_detection()
+        if is_available:
+            self.report({'INFO'}, f"BlenderKit detected: {addon_name}")
+        else:
+            # List all available addons for debugging
+            addon_list = list(bpy.context.preferences.addons.keys())
+            blenderkit_related = [a for a in addon_list if 'blender' in a.lower() and 'kit' in a.lower()]
+            if blenderkit_related:
+                self.report({'WARNING'}, f"Found related addons: {blenderkit_related} but couldn't detect BlenderKit")
+            else:
+                self.report({'WARNING'}, "BlenderKit addon not found. Please install from blenderkit.com")
         return {'FINISHED'}
 
 # Operator to start the server
@@ -6040,6 +6168,7 @@ def register():
 
     bpy.utils.register_class(BLENDERMCP_PT_Panel)
     bpy.utils.register_class(BLENDERMCP_OT_SetFreeTrialHyper3DAPIKey)
+    bpy.utils.register_class(BLENDERMCP_OT_RefreshBlenderKit)
     bpy.utils.register_class(BLENDERMCP_OT_StartServer)
     bpy.utils.register_class(BLENDERMCP_OT_StopServer)
 
@@ -6053,6 +6182,7 @@ def unregister():
 
     bpy.utils.unregister_class(BLENDERMCP_PT_Panel)
     bpy.utils.unregister_class(BLENDERMCP_OT_SetFreeTrialHyper3DAPIKey)
+    bpy.utils.unregister_class(BLENDERMCP_OT_RefreshBlenderKit)
     bpy.utils.unregister_class(BLENDERMCP_OT_StartServer)
     bpy.utils.unregister_class(BLENDERMCP_OT_StopServer)
 
